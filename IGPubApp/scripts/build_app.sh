@@ -3,6 +3,11 @@
 # exists (a stable identity: Keychain permissions and in-app updates survive new builds); otherwise ad-hoc.
 set -eu
 cd "$(dirname "$0")/.."
+# Never rebuild underneath an app that is running from this folder (it could crash it mid-use).
+if pgrep -f "$(pwd)/build/img_to_ig.app/Contents/MacOS" >/dev/null 2>&1; then
+  echo "STOP: img_to_ig is running from build/. Quit it (or run it from /Applications) before rebuilding." >&2
+  exit 1
+fi
 VERSION="$(tr -d '[:space:]' < VERSION)"
 case "$VERSION" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "bad VERSION: $VERSION" >&2; exit 1 ;; esac
 swift build -c release

@@ -9,7 +9,7 @@ struct PhotoItem: Identifiable {
     let digest: String
     var caption: String
     var selected: Bool
-    let alreadyPublished: Bool
+    var alreadyPublished: Bool
     let thumbnail: NSImage?
     var bytes: Int = 0
     var captionFile: String?   // name of the sibling .txt the caption came from
@@ -26,6 +26,15 @@ struct PhotoItem: Identifiable {
     var extras: PostExtras? {
         Usernames.parseList(collaboratorsText).map { PostExtras(collaborators: $0, aiGenerated: aiGenerated) }
     }
+}
+
+private let stagedKeysDefaultsKey = "stagedKeys"
+
+/// The three pages of publishing, shown in the sidebar.
+enum FlowStep: Int, CaseIterable, Identifiable {
+    case select, edit, send
+    var id: Int { rawValue }
+    var title: String { ["選擇圖片", "編輯內容", "發佈"][rawValue] }
 }
 
 enum UpdateState: Equatable {
@@ -107,7 +116,12 @@ final class AppModel: ObservableObject {
     @Published var config: AppConfig?
     @Published var items: [PhotoItem] = []
     @Published var mode: PublishMode = .singles
-    @Published var reviewing = false      // the final preview page before publishing
+    @Published var flow: FlowStep = .select
+    /// Upload state of each selected photo's temporary copy, by content digest (uploaded while editing).
+    @Published var stagedState: [String: UploadStager.State] = [:]
+    private var stager: UploadStager?
+    private var stagerFingerprint = ""
+    private var stagingGeneration = 0
     @Published var carouselCaption = ""
     @Published var carouselCollaboratorsText = ""
     @Published var carouselAI = false
@@ -123,7 +137,16 @@ final class AppModel: ObservableObject {
     @Published var history: [LedgerEntry] = []
 
     // preferences (UserDefaults)
+    @Published var showKeychainNotice = false
+    private var keychainNoticeContinuation: CheckedContinuation<Void, Never>?
     @Published var updateState: UpdateState = .idle
+    /// Photos over the size limit: false = upload the original untouched (best quality; Instagram may refuse it).
+    @Published var autoShrink: Bool {
+        didSet {
+            defaults.set(autoShrink, forKey: "autoShrink")
+            Task { await dropStaging() }          // the staged copies were made under the old setting
+        }
+    }
     @Published var autoCheckUpdates: Bool { didSet { defaults.set(autoCheckUpdates, forKey: "autoCheckUpdates") } }
     @Published var remindExpiry: Bool { didSet { defaults.set(remindExpiry, forKey: "remindExpiry") } }
     @Published var defaultMode: PublishMode { didSet { defaults.set(defaultMode.rawValue, forKey: "defaultMode") } }
@@ -146,9 +169,8 @@ final class AppModel: ObservableObject {
         doneSteps = Set((defaults.array(forKey: "doneSteps") as? [Int]) ?? [])
         remindExpiry = defaults.object(forKey: "remindExpiry") as? Bool ?? true
         autoCheckUpdates = defaults.object(forKey: "autoCheckUpdates") as? Bool ?? true
-        let savedMode = defaults.string(forKey: "defaultMode")
-        let dm = savedMode.flatMap(PublishMode.init(rawValue:))
-            ?? (savedMode?.hasPrefix("輪播") == true ? .carousel : .singles)   // names used before 2026-10-17
+        autoShrink = defaults.object(forKey: "autoShrink") as? Bool ?? false
+        let dm = defaults.string(forKey: "defaultMode").flatMap(PublishMode.init(rawValue:)) ?? .singles
         defaultMode = dm
         let mpr = defaults.integer(forKey: "maxPerRun")
         maxPerRun = Self.maxPerRunRange.contains(mpr) ? mpr : 10
@@ -273,6 +295,7 @@ final class AppModel: ObservableObject {
     }
 
     func runTest() async {
+        await prepareKeychainAccess()
         guard !testing else { return }
         testing = true
         testLines = []
@@ -338,6 +361,8 @@ final class AppModel: ObservableObject {
     // MARK: publish
 
     func refreshQuota() async {
+        guard !Self.smokeTest else { return }
+        await prepareKeychainAccess()
         guard let cfg = config, let token = secrets.get(SecretName.accessToken) else { return }
         let ig = InstagramClient(config: cfg, token: token, http: URLSessionHTTP())
         guard let r = try? await ig.publishingLimit(), let first = (r["data"] as? [[String: Any]])?.first else {
@@ -351,7 +376,7 @@ final class AppModel: ObservableObject {
 
     func add(urls: [URL]) {
         guard let cfg = config else { return }
-        let (ok, bad) = Files.collect(urls, maxBytes: cfg.maxBytes)
+        let (ok, bad) = Files.collect(urls, maxBytes: max(cfg.maxBytes, AppConfig.maxSourceBytes))
         skipped = bad.map { "\($0.0.lastPathComponent)：\($0.1)" }
         for u in ok where !items.contains(where: { $0.url == u }) {
             guard let digest = try? Files.sha256(u) else { continue }
@@ -388,12 +413,15 @@ final class AppModel: ObservableObject {
         lastTapped = id
     }
 
+    func moveItem(_ id: UUID, before target: UUID?) { items = Reorder.move(items, id, before: target) }
+    func shiftItem(_ id: UUID, by offset: Int) { items = Reorder.shift(items, id, by: offset) }
+
     var chosen: [PhotoItem] { items.filter { $0.selected } }
 
     var publishProblem: String? {
         let n = chosen.count
         if n == 0 { return "請至少勾選一張照片" }
-        if mode == .carousel, !(2...10).contains(n) { return "輪播需要 2～10 張，目前勾選 \(n) 張" }
+        if mode == .carousel, !(2...10).contains(n) { return "Instagram API 限制：一則多張貼文只能放 2～10 張，目前勾選 \(n) 張" }
         if mode == .singles, n > maxPerRun { return "單次最多 \(maxPerRun) 則，目前勾選 \(n) 張" }
         if mode == .carousel, carouselCaption.count > AppConfig.maxCaption { return "文案超過 2200 字" }
         if mode == .singles, chosen.contains(where: { $0.caption.count > AppConfig.maxCaption }) {
@@ -415,18 +443,18 @@ final class AppModel: ObservableObject {
     }
 
     func publish() async {
+        await prepareKeychainAccess()
         guard !busy, publishProblem == nil, let cfg = config,
               let token = secrets.get(SecretName.accessToken),
               let ak = secrets.get(SecretName.s3AccessKey), let sk = secrets.get(SecretName.s3SecretKey) else { return }
         busy = true
-        reviewing = false
         setError(nil)
         log = []
         defer { busy = false }
         let http = URLSessionHTTP()
         let pub = Publisher(ig: InstagramClient(config: cfg, token: token, http: http),
                             storage: TempStorage(config: cfg, accessKey: ak, secretKey: sk, http: http),
-                            ledger: ledger)
+                            ledger: ledger, shrinkOversize: autoShrink, stager: await validStager())
         let picked = chosen
         let carousel = mode == .carousel
         progress = picked.map { ProgressRow(name: $0.url.lastPathComponent) }
@@ -469,10 +497,22 @@ final class AppModel: ObservableObject {
                 }
             }
             setError(failure)
+            // Singles: photos that already went out must not be posted again by pressing Publish once more.
+            ledger.reload()
+            var already = 0
+            for i in items.indices where ledger.has(items[i].digest) && !items[i].alreadyPublished {
+                items[i].alreadyPublished = true
+                items[i].selected = false
+                already += 1
+            }
+            if already > 0 {
+                errorText = (errorText ?? "") + "\n已有 \(already) 張成功發佈，已自動取消勾選，再按發佈不會重複發這幾張。"
+            }
         } else {
             for i in progress.indices { progress[i].state = .done }
             let digests = Set(picked.map { $0.digest })
             items.removeAll { digests.contains($0.digest) }
+            for d in digests { stagedState[d] = nil }
         }
         progressFinished = true
         await refreshQuota()
@@ -480,18 +520,24 @@ final class AppModel: ObservableObject {
 
     /// Maps the publisher's log lines onto per-photo progress. Each "上傳 …" line starts the next photo.
     private func track(_ line: String, carousel: Bool) {
+        if carousel {
+            // Photos are prepared a few at a time, so rows are matched by file name rather than by order.
+            func row(_ name: String, _ state: ItemProgress) {
+                if let i = progress.firstIndex(where: { $0.name == name && $0.state != .done }) { progress[i].state = state }
+            }
+            if line.hasPrefix("上傳 "), line.hasSuffix("…") { row(String(line.dropFirst(3).dropLast()), .running(.upload)) }
+            else if line.hasPrefix("就緒 ") { row(String(line.dropFirst(3)), .ready) }
+            else if line.hasPrefix("已發佈") { for i in progress.indices { progress[i].state = .done } }
+            return
+        }
         let current = progress.firstIndex { if case .running = $0.state { return true }; return false }
         if line.hasPrefix("上傳") {
-            if let c = current { progress[c].state = carousel ? .ready : .done }
+            if let c = current { progress[c].state = .done }
             if let next = progress.firstIndex(where: { $0.state == .pending }) { progress[next].state = .running(.upload) }
         } else if line.hasPrefix("等待"), let c = current {
             progress[c].state = .running(.wait)
-        } else if line.hasPrefix("已發佈") {
-            if carousel {
-                for i in progress.indices { progress[i].state = .done }
-            } else if let c = current {
-                progress[c].state = .done
-            }
+        } else if line.hasPrefix("已發佈"), let c = current {
+            progress[c].state = .done
         }
     }
 
@@ -501,6 +547,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshToken() async {
+        await prepareKeychainAccess()
         guard canRefreshToken, let cfg = config, let token = secrets.get(SecretName.accessToken) else { return }
         do {
             let new = try await InstagramClient(config: cfg, token: token, http: URLSessionHTTP()).refreshToken()
@@ -553,6 +600,7 @@ final class AppModel: ObservableObject {
     /// Deletes Keychain items, config.json and app preferences (and optionally the shared ledger), then returns to
     /// the wizard. Returns an error message if something could not be removed.
     func removeAllData(clearLedger: Bool) -> String? {
+        Task { await dropStaging() }          // best effort: delete the temporary copies while the keys are still in memory
         var problems: [String] = []
         var stillThere: [String] = []
         for n in SecretNames.all where !secrets.delete(n) && secrets.get(n) != nil { stillThere.append(n) }
@@ -566,7 +614,7 @@ final class AppModel: ObservableObject {
         testLines = []
         quota = nil
         clearProgress()
-        for k in ["draft", "doneSteps", IconStyle.key, "remindExpiry", "defaultMode", "maxPerRun", "autoCheckUpdates", "lastUpdateCheck"] {
+        for k in ["draft", "doneSteps", IconStyle.key, "remindExpiry", "defaultMode", "maxPerRun", "autoCheckUpdates", "lastUpdateCheck", "keychainNoticeSeen", "autoShrink"] {
             defaults.removeObject(forKey: k)
         }
         remindExpiry = true
@@ -580,12 +628,143 @@ final class AppModel: ObservableObject {
         return problems.isEmpty ? nil : problems.joined(separator: "\n")
     }
 
+    // MARK: flow + staging
+
+    func canGo(_ s: FlowStep) -> Bool {
+        guard !busy else { return false }
+        switch s {
+        case .select: return true
+        case .edit: return !chosen.isEmpty
+        case .send: return !chosen.isEmpty && publishProblem == nil
+        }
+    }
+
+    func go(_ s: FlowStep) {
+        guard canGo(s) else { return }
+        flow = s
+        if s != .select { Task { await syncStaging() } }
+    }
+
+    var stagedReady: Int { chosen.filter { stagedState[$0.digest] == .ready }.count }
+    var stagedFailed: Int { chosen.filter { if case .failed = stagedState[$0.digest] { return true }; return false }.count }
+
+    func clearItems() {
+        let digests = Set(items.map(\.digest))
+        items = []
+        Task { await discardStaged(digests) }
+    }
+
+
+    /// Objects of a previous session that never got used (the app quit in between) are deleted first.
+    /// Only keys of the exact shape this app creates are touched, whatever is stored.
+    private func removeLeftovers(_ storage: TempStorage, config: AppConfig) async {
+        let old = defaults.stringArray(forKey: stagedKeysDefaultsKey) ?? []
+        defaults.removeObject(forKey: stagedKeysDefaultsKey)
+        for k in old where StagingKeys.isOwn(k, prefix: config.prefix) { await storage.delete(k) }
+    }
+
+    /// Identifies the storage the staged copies live in; any change (bucket, endpoint, prefix, keys, size limit) invalidates them.
+    private func fingerprint(_ cfg: AppConfig, _ ak: String) -> String {
+        [cfg.endpoint, cfg.bucket, cfg.prefix, cfg.region, String(cfg.maxBytes), ak].joined(separator: "\u{1}")
+    }
+
+    /// The stager, only if it still matches the current storage settings (otherwise it is dropped).
+    private func validStager() async -> UploadStager? {
+        guard let s = stager else { return nil }
+        guard let cfg = config, let ak = secrets.get(SecretName.s3AccessKey), fingerprint(cfg, ak) == stagerFingerprint else {
+            await dropStaging(); return nil
+        }
+        return s
+    }
+
+    private func makeStager() async -> UploadStager? {
+        if let s = await validStager() { return s }
+        guard !Self.smokeTest, let cfg = config,
+              let ak = secrets.get(SecretName.s3AccessKey), let sk = secrets.get(SecretName.s3SecretKey) else { return nil }
+        let storage = TempStorage(config: cfg, accessKey: ak, secretKey: sk, http: URLSessionHTTP())
+        await removeLeftovers(storage, config: cfg)
+        let shrink = autoShrink, limit = cfg.maxBytes
+        nonisolated(unsafe) let d = defaults        // UserDefaults is thread-safe
+        let s = UploadStager(storage: storage,
+                             prepare: { try Publisher.prepareBytes($0, maxBytes: limit, shrinkOversize: shrink) },
+                             onChange: { keys in d.set(keys, forKey: stagedKeysDefaultsKey) })
+        stager = s
+        stagerFingerprint = fingerprint(cfg, ak)
+        return s
+    }
+
+    /// Uploads the selected photos (a few at a time) and removes copies of photos that are no longer selected.
+    func syncStaging() async {
+        await prepareKeychainAccess()
+        guard let s = await makeStager() else { return }
+        stagingGeneration += 1
+        let generation = stagingGeneration
+        let items = chosen.map { PublishItem(url: $0.url, digest: $0.digest, caption: "") }
+        let want = Set(items.map(\.digest))
+        await discardStaged(await s.staged.subtracting(want))
+        for it in items where stagedState[it.digest] != .ready { stagedState[it.digest] = .uploading }
+        await withTaskGroup(of: Void.self) { group in
+            var started = 0
+            func next() {
+                guard started < items.count else { return }
+                let it = items[started]; started += 1
+                group.addTask {
+                    await s.stage(it)
+                    let st = await s.state(of: it.digest)
+                    await MainActor.run { if let st { self.stagedState[it.digest] = st } }
+                }
+            }
+            for _ in 0..<min(Publisher.parallelPhotos, items.count) { next() }
+            while await group.next() != nil {
+                if generation != self.stagingGeneration { group.cancelAll() }
+                next()
+            }
+        }
+    }
+
+    private func discardStaged(_ digests: Set<String>) async {
+        guard !digests.isEmpty else { return }
+        for d in digests { stagedState[d] = nil }
+        await stager?.discard(digests)
+    }
+
+    private func dropStaging() async {
+        stagingGeneration += 1
+        await stager?.discardAll()
+        stager = nil
+        stagerFingerprint = ""
+        stagedState = [:]
+    }
+
+    // MARK: keychain notice
+
+    /// Before the first read of the stored secrets, tell the user which Keychain item macOS is about to ask about.
+    /// Shown once (and from Settings any time); the system prompts follow right after.
+    /// Set by scripts/verify.sh so the launch test never touches the Keychain or the network.
+    static let smokeTest = ProcessInfo.processInfo.environment["IMG_TO_IG_SMOKE_TEST"] == "1"
+
+    func prepareKeychainAccess() async {
+        guard !Self.smokeTest else { return }
+        guard !defaults.bool(forKey: "keychainNoticeSeen"),
+              SecretNames.all.contains(where: { secretPresent[$0] == true }) else { return }
+        showKeychainNotice = true
+        await withCheckedContinuation { keychainNoticeContinuation = $0 }
+    }
+
+    func acknowledgeKeychainNotice() {
+        defaults.set(true, forKey: "keychainNoticeSeen")
+        showKeychainNotice = false
+        keychainNoticeContinuation?.resume()
+        keychainNoticeContinuation = nil
+    }
+
     // MARK: updates
 
     var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
 
     /// Checks at most once a day, and only when the user left automatic checks on.
     func autoCheckIfDue() async {
+        guard !Self.smokeTest else { return }
         guard autoCheckUpdates, updateState == .idle else { return }
         let last = defaults.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast
         guard Date().timeIntervalSince(last) > 24 * 3600 else { return }
@@ -643,6 +822,7 @@ final class AppModel: ObservableObject {
 
     /// Removes identifying data from an error message before it leaves the app.
     static func scrub(_ text: String, _ c: AppConfig) -> String {
+        let text = text.replacing(#/https?:\/\/[^\s"')]+/#, with: "<網址>")
         var t = redact(text, c.userId, c.bucket, c.endpointHost)
         t = t.replacing(#/\d{8,}/#, with: "…")
         t = t.replacing(#/[^\s/\\:：；，。、！？「」（）()"']+\.(?i:jpe?g)/#, with: "<file>.jpg")

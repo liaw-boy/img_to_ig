@@ -26,12 +26,21 @@ public struct TempStorage {
 
     func newKey() -> String { "\(config.prefix)\(UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")).jpg" }
 
-    /// Returns (key, signed GET url).
-    public func upload(data: Data) async throws -> (key: String, url: String) {
+    /// Uploads without handing out a URL yet (the URL is signed later, when Instagram is about to fetch it).
+    public func put(data: Data) async throws -> String {
         let key = newKey()
         let r = try await send("PUT", signed("PUT", key), body: data, headers: ["Content-Type": "image/jpeg"])
         guard [200, 201, 204].contains(r.status) else { throw Self.statusError("上傳失敗", r.status) }
-        return (key, try signed("GET", key).absoluteString)
+        return key
+    }
+
+    /// A fresh short-lived signed GET URL for an object that is already uploaded.
+    public func signedGetURL(forKey key: String) throws -> String { try signed("GET", key).absoluteString }
+
+    /// Returns (key, signed GET url).
+    public func upload(data: Data) async throws -> (key: String, url: String) {
+        let key = try await put(data: data)
+        return (key, try signedGetURL(forKey: key))
     }
 
     static func statusError(_ what: String, _ status: Int) -> IGPubError {

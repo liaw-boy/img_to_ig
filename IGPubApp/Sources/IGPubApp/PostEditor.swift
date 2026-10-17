@@ -54,13 +54,14 @@ struct PostEditor: View {
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 Text("文案").font(Theme.Font.label).foregroundStyle(Theme.ink)
                 CaptionEditor(text: captionBinding, label: "文案")
-                Text("可以直接打 #主題標籤 和 @帳號（最多 30 個標籤、20 個 @）。")
+                Text("選填。按 Enter 換行，可以直接打 #主題標籤 和 @帳號（最多 30 個標籤、20 個 @）。")
                     .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
             }
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 Text("合作夥伴（最多 \(PostExtras.maxCollaborators) 個帳號）").font(Theme.Font.label).foregroundStyle(Theme.ink)
                 TextField("@帳號，用逗號或空格分開（選填）", text: collabBinding)
                     .igField(valid: collaboratorsValid, mono: true)
+                Text("對方必須是公開帳號，名稱要打對，否則 Instagram 會拒絕整則貼文。").font(Theme.Font.caption).foregroundStyle(Theme.ink3)
                 Toggle("這則貼文是 AI 生成的", isOn: aiBinding).toggleStyle(.checkbox).font(Theme.Font.callout)
             }
             Rectangle().fill(Theme.line).frame(height: 1)

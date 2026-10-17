@@ -25,7 +25,7 @@ public struct InstagramClient {
     let pollTries: Int
 
     public init(config: AppConfig, token: String, http: HTTPClient,
-                pollSeconds: TimeInterval = 60, pollTries: Int = 5,
+                pollSeconds: TimeInterval = 60, pollTries: Int = 14,
                 sleep: @escaping (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1e9)) }) {
         self.config = config
         self.token = token
@@ -99,7 +99,15 @@ public struct InstagramClient {
     static func apiError(_ err: [String: Any], status: Int, token: String, prefix: String = "Instagram 錯誤") -> IGPubError {
         let code = int(err["code"])
         let sub = int(err["error_subcode"])
-        let raw = redact(String(describing: err["message"] ?? "request rejected"), token)
+        var rawText = String(describing: err["message"] ?? "request rejected")
+        // Meta's own explanation and trace id, when it sends them, make a failure much easier to pin down.
+        let userTitle = (err["error_user_title"] as? String).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        let userMsg = (err["error_user_msg"] as? String).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        if !userTitle.isEmpty || !userMsg.isEmpty { rawText += " | Instagram 說明：" + [userTitle, userMsg].filter { !$0.isEmpty }.joined(separator: "：") }
+        if let trace = err["fbtrace_id"] as? String, trace.count <= 40 { rawText += " | 追蹤碼 \(trace)" }
+        // Meta sometimes echoes the image URL, and ours is a signed URL (access key id + signature in the query).
+        rawText = rawText.replacing(#/https?:\/\/[^\s"')]+/#, with: "<網址>")
+        let raw = redact(rawText, token)
         let label = "\(prefix) \(code.map(String.init) ?? String(status))\(sub.map { "/\($0)" } ?? "")"
         let (text, fix, hint): (String?, SetupStep?, String?) = {
             switch (code, sub) {
@@ -129,11 +137,14 @@ public struct InstagramClient {
             case (_, 2207010?), (36004?, _):
                 return ("文案太長（最多 2200 字、30 個 hashtag、20 個 @）", nil, "縮短文案")
             case (_, 2207028?):
-                return ("輪播需要 2～10 張", nil, nil)
+                return ("Instagram API 限制：一則多張貼文只能放 2～10 張", nil, nil)
             case (_, 2207020?), (_, 2207008?), (24?, _):
                 return ("上傳的暫存項目已過期，請重新發佈一次", nil, "重新發佈")
             case (_, 2207001?), (_, 2207032?), (.some(-1), _), (1?, _), (2?, _):
                 return ("Instagram 暫時出錯，請稍後再試", nil, "稍後再試")
+            case (110?, _):
+                return ("Instagram 說有帳號無法使用：通常是「合作夥伴」或「標記人」填的帳號是私人帳號、或名稱打錯／不存在。請改用公開帳號，或把它從合作夥伴與標記人移除",
+                        nil, "檢查合作夥伴／標記人")
             case (100?, _):
                 return ("參數不正確，最常見是 Instagram user id 填錯，請到步驟 3 確認", .meta, "檢查 user id")
             default:
@@ -205,14 +216,15 @@ public struct InstagramClient {
         return try id(await call("POST", "\(config.userId)/media", p))
     }
 
-    /// Polls the container (docs suggest once a minute, at most five minutes).
+    /// Polls the container. Images are usually ready in seconds, so the first checks come quickly (2 s, 3 s, 4.5 s, …)
+    /// and back off to once a minute (the interval Meta documents) for a total of roughly six minutes.
     public func waitFinished(_ containerId: String) async throws {
         for attempt in 0..<pollTries {
             let r = try await call("GET", containerId, [("fields", "status_code")])
             let status = r["status_code"] as? String
             if status == "FINISHED" || status == "PUBLISHED" { return }
             if status == "ERROR" || status == "EXPIRED" { throw IGPubError("容器狀態：\(status!)") }
-            if attempt + 1 < pollTries { await sleep(pollSeconds) }
+            if attempt + 1 < pollTries { await sleep(min(pollSeconds, 2 * pow(1.5, Double(attempt)))) }
         }
         throw IGPubError("容器在時限內沒有就緒")
     }

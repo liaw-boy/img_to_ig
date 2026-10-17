@@ -5,6 +5,11 @@ set -eu
 cd "$(dirname "$0")/.."
 step() { printf '\n== %s\n' "$1"; }
 
+# Never rebuild underneath an app that is running from this folder (it could crash it mid-use).
+if pgrep -f "$(pwd)/build/img_to_ig.app/Contents/MacOS" >/dev/null 2>&1; then
+  echo "STOP: img_to_ig is running from build/. Quit it (or run it from /Applications) before rebuilding." >&2
+  exit 1
+fi
 step "1/5 build (debug, warnings shown)"
 swift build 2>&1 | tee .build/verify-build.log | grep -E "warning:|error:" || true
 grep -q "error:" .build/verify-build.log && { echo "FAIL: build errors"; exit 1; }
@@ -26,10 +31,15 @@ codesign -dv build/img_to_ig.app 2>&1 | grep -q "flags=.*runtime" || { echo "FAI
 echo "ok: build/img_to_ig.app signed (ad-hoc, hardened runtime)"
 
 step "5/5 launch smoke test"
-open build/img_to_ig.app
+# Run a throw-away COPY and stop only that process (by PID). Never `open` or quit by name: that would close an
+# instance somebody is using (e.g. in the middle of publishing). IMG_TO_IG_SMOKE_TEST keeps it off the Keychain and network.
+SMOKE="$(mktemp -d)"
+cp -R build/img_to_ig.app "$SMOKE/img_to_ig.app"
+IMG_TO_IG_SMOKE_TEST=1 "$SMOKE/img_to_ig.app/Contents/MacOS/img_to_ig" >/dev/null 2>&1 &
+PID=$!
 sleep 4
-if pgrep -f "img_to_ig.app/Contents/MacOS/img_to_ig" >/dev/null; then echo "ok: app is running"; else echo "FAIL: app did not stay up"; exit 1; fi
-osascript -e 'quit app "img_to_ig"' >/dev/null 2>&1 || true
+if kill -0 "$PID" 2>/dev/null; then echo "ok: app stayed up for 4 seconds"; kill "$PID" 2>/dev/null || true; else echo "FAIL: app did not stay up"; rm -rf "$SMOKE"; exit 1; fi
+sleep 1; rm -rf "$SMOKE"
 
 printf '\nALL CHECKS PASSED\n'
 echo "Not covered automatically: real Instagram/R2 calls, visual review, first real publish (needs a human)."

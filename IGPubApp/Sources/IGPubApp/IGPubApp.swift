@@ -21,12 +21,16 @@ struct IGPubApp: App {
             .background(Theme.canvas)
             .frame(minWidth: 960, minHeight: 640)
             .task { await model.autoCheckIfDue() }
+            .sheet(isPresented: $model.showKeychainNotice) {
+                KeychainNoticeSheet().environmentObject(model).interactiveDismissDisabled()
+            }
             .onAppear {
+                Self.enlargeWindowOnce()
                 NSApp.setActivationPolicy(.regular)
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
-        .defaultSize(width: 1100, height: 720)
+        .defaultSize(width: 1360, height: 900)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("檢查更新…") { Task { await model.checkForUpdates(manual: true) } }
@@ -52,5 +56,19 @@ struct IGPubApp: App {
         }
         .windowResizability(.contentSize)
     }
-}
 
+    /// macOS restores the last window size, so a bigger default would never show; enlarge once, then leave it to the user.
+    private static func enlargeWindowOnce() {
+        let key = "windowEnlargedV1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        DispatchQueue.main.async {
+            guard let w = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }), let screen = w.screen ?? NSScreen.main else { return }
+            let v = screen.visibleFrame
+            let size = NSSize(width: min(1360, v.width * 0.92), height: min(900, v.height * 0.92))
+            if w.frame.width < size.width || w.frame.height < size.height {
+                w.setFrame(NSRect(x: v.midX - size.width / 2, y: v.midY - size.height / 2, width: size.width, height: size.height), display: true)
+            }
+            UserDefaults.standard.set(true, forKey: key)
+        }
+    }
+}

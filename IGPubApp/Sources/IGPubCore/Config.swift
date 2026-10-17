@@ -15,6 +15,9 @@ public struct IGPubError: Error, LocalizedError, Equatable {
         self.hint = hint
     }
     public var errorDescription: String? { message }
+
+    /// Same error with a note on where it happened ("上傳 a.jpg 失敗：…"); the fix hint is kept.
+    public func prefixed(_ prefix: String) -> IGPubError { IGPubError(prefix + message, fix: fix, hint: hint) }
 }
 
 /// Non-secret settings. Tokens and keys live in the Keychain only (see SecretStore).
@@ -56,6 +59,8 @@ public struct AppConfig: Codable, Equatable {
 
     public static let apiHosts: Set<String> = ["graph.instagram.com", "graph.facebook.com"]
     public static let maxCaption = 2200
+    /// Largest original accepted; anything above `maxBytes` is shrunk when it is published.
+    public static let maxSourceBytes = 64 * 1024 * 1024
 
     /// Cloudflare R2 account ids are 32 hex characters.
     public static func isR2AccountId(_ s: String) -> Bool {

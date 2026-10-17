@@ -1,4 +1,6 @@
 import XCTest
+import ImageIO
+import UniformTypeIdentifiers
 @testable import IGPubCore
 
 final class FakeHTTP: HTTPClient, @unchecked Sendable {
@@ -336,7 +338,7 @@ final class HardeningTests: XCTestCase {
         let digest = try Files.sha256(f)
         try Data([0xFF, 0xD8, 0xFF, 0xE0, 9, 9, 9]).write(to: f)
         do { _ = try await p.publishSingles([PublishItem(url: f, digest: digest, caption: "")], log: { _ in }); XCTFail() } catch {
-            XCTAssertEqual(error as? IGPubError, IGPubError("檔案在加入後被更改，請重新加入"))
+            XCTAssertEqual((error as? IGPubError)?.message, "上傳 a.jpg 失敗：檔案在加入後被更改，請重新加入")   // says which step failed
         }
         let g = try tempJPEG()
         let items = [PublishItem(url: f, digest: digest, caption: ""), PublishItem(url: g, digest: try Files.sha256(g), caption: "")]
@@ -849,5 +851,368 @@ final class ConfigMigrationTests: XCTestCase {
         ConfigStore.migrateLegacy(from: old, to: new)
         XCTAssertEqual(try String(contentsOf: new, encoding: .utf8), "NEW")
         XCTAssertTrue(fm.fileExists(atPath: old.path))
+    }
+}
+
+
+final class ReorderTests: XCTestCase {
+    struct Item: Identifiable, Equatable { let id: Int }
+    private let a = (1...5).map(Item.init)
+    private func ids(_ x: [Item]) -> [Int] { x.map(\.id) }
+
+    func testMoveBeforeTarget() {
+        XCTAssertEqual(ids(Reorder.move(a, 4, before: 2)), [1, 4, 2, 3, 5])
+        XCTAssertEqual(ids(Reorder.move(a, 1, before: 4)), [2, 3, 1, 4, 5])
+        XCTAssertEqual(ids(Reorder.move(a, 2, before: 3)), [1, 2, 3, 4, 5])      // already right before it
+    }
+
+    func testMoveToEndAndNoOps() {
+        XCTAssertEqual(ids(Reorder.move(a, 2, before: nil)), [1, 3, 4, 5, 2])
+        XCTAssertEqual(ids(Reorder.move(a, 3, before: 3)), [1, 2, 3, 4, 5])
+        XCTAssertEqual(ids(Reorder.move(a, 99, before: 2)), [1, 2, 3, 4, 5])
+        XCTAssertEqual(ids(Reorder.move(a, 2, before: 99)), [1, 3, 4, 5, 2])     // unknown target = end
+    }
+
+    func testShiftStopsAtTheEnds() {
+        XCTAssertEqual(ids(Reorder.shift(a, 3, by: -1)), [1, 3, 2, 4, 5])
+        XCTAssertEqual(ids(Reorder.shift(a, 3, by: 1)), [1, 2, 4, 3, 5])
+        XCTAssertEqual(ids(Reorder.shift(a, 1, by: -1)), [1, 2, 3, 4, 5])
+        XCTAssertEqual(ids(Reorder.shift(a, 5, by: 3)), [1, 2, 3, 4, 5])
+        XCTAssertEqual(ids(Reorder.shift(a, 2, by: 10)), [1, 3, 4, 5, 2])
+        XCTAssertEqual(ids(Reorder.shift([], 1, by: 1)), [])
+    }
+}
+
+
+final class ShrinkTests: XCTestCase {
+    /// A noisy JPEG (noise does not compress, so it is big): `side` x `side`, quality 1.0.
+    private func noisyJPEG(side: Int) -> Data {
+        var px = [UInt8](repeating: 0, count: side * side * 4)
+        var g = SystemRandomNumberGenerator()
+        for i in 0..<px.count { px[i] = i % 4 == 3 ? 255 : UInt8.random(in: 0...255, using: &g) }
+        let ctx = CGContext(data: &px, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let out = NSMutableData()
+        let d = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(d, ctx.makeImage()!, [kCGImageDestinationLossyCompressionQuality: 1.0] as CFDictionary)
+        CGImageDestinationFinalize(d)
+        return out as Data
+    }
+
+    private func pixelSize(_ d: Data) -> (Int, Int) {
+        let src = CGImageSourceCreateWithData(d as CFData, nil)!
+        let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as! [CFString: Any]
+        return ((p[kCGImagePropertyPixelWidth] as! NSNumber).intValue, (p[kCGImagePropertyPixelHeight] as! NSNumber).intValue)
+    }
+
+    func testShrinksToTheLimitAndKeepsAValidJPEG() throws {
+        let big = noisyJPEG(side: 1800)
+        let limit = big.count / 3
+        XCTAssertGreaterThan(big.count, limit)
+        let small = try ImageShrinker.shrink(big, toAtMost: limit)
+        XCTAssertLessThanOrEqual(small.count, limit)
+        XCTAssertTrue(small.starts(with: [0xFF, 0xD8, 0xFF]))
+        let (w, h) = pixelSize(small)
+        XCTAssertLessThanOrEqual(max(w, h), 1800)           // never enlarged
+        XCTAssertEqual(Double(w) / Double(h), 1.0, accuracy: 0.01)
+    }
+
+    func testGentleStepKeepsTheFullSizeWhenQualityIsEnough() throws {
+        let big = noisyJPEG(side: 1200)
+        let small = try ImageShrinker.shrink(big, toAtMost: Int(Double(big.count) * 0.9))
+        XCTAssertEqual(pixelSize(small).0, 1200)
+    }
+
+    func testImpossibleLimitAndGarbageThrow() {
+        XCTAssertThrowsError(try ImageShrinker.shrink(noisyJPEG(side: 600), toAtMost: 500))
+        XCTAssertThrowsError(try ImageShrinker.shrink(Data("not an image".utf8), toAtMost: 1000))
+    }
+
+    func testPublisherUploadsAShrunkCopyAndLeavesTheOriginalAlone() async throws {
+        let big = noisyJPEG(side: 1500)
+        let url = try tempJPEG(bytes: [UInt8](big))
+        var c = cfg(); c.maxBytes = max(1024, big.count / 3)
+        let http = FakeHTTP { _, _, _ in (200, Data()) }
+        let p = Publisher(ig: InstagramClient(config: c, token: "tok-123456", http: http, sleep: { _ in }),
+                          storage: TempStorage(config: c, accessKey: "AK", secretKey: "SK", http: http),
+                          ledger: Ledger(url: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "/p.json")),
+                          shrinkOversize: true)
+        let item = PublishItem(url: url, digest: Files.sha256(big), caption: "")
+        let data = try p.verifiedData(item)
+        XCTAssertLessThanOrEqual(data.count, c.maxBytes)
+        XCTAssertEqual(try Data(contentsOf: url).count, big.count)        // original untouched
+        let tampered = PublishItem(url: url, digest: String(repeating: "0", count: 64), caption: "")
+        XCTAssertThrowsError(try p.verifiedData(tampered))                // hash of the ORIGINAL is still enforced
+    }
+
+    func testOversizePhotoIsUploadedUntouchedByDefault() throws {
+        let big = noisyJPEG(side: 1500)
+        let url = try tempJPEG(bytes: [UInt8](big))
+        var c = cfg(); c.maxBytes = max(1024, big.count / 3)
+        let http = FakeHTTP { _, _, _ in (200, Data()) }
+        let p = Publisher(ig: InstagramClient(config: c, token: "tok-123456", http: http, sleep: { _ in }),
+                          storage: TempStorage(config: c, accessKey: "AK", secretKey: "SK", http: http),
+                          ledger: Ledger(url: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "/p.json")))
+        XCTAssertEqual(try p.verifiedData(PublishItem(url: url, digest: Files.sha256(big), caption: "")), big)   // best quality: not re-encoded
+    }
+}
+
+final class FailureReportingTests: XCTestCase {
+    func testMetaExplanationAndTraceIdAreKept() {
+        let e = InstagramClient.apiError(["code": 110, "error_subcode": 2207018, "message": "Invalid user id",
+                                          "error_user_title": "標題", "error_user_msg": "說明文字", "fbtrace_id": "AbC123"],
+                                         status: 400, token: "tok-123456")
+        XCTAssertTrue(e.message.contains("Invalid user id"))
+        XCTAssertTrue(e.message.contains("標題：說明文字"))
+        XCTAssertTrue(e.message.contains("追蹤碼 AbC123"))
+        XCTAssertTrue(e.message.contains("110/2207018"))
+    }
+
+    func testPollingStartsFastAndBacksOffToTheCap() async throws {
+        var slept: [TimeInterval] = []
+        let http = FakeHTTP { _, _, _ in (200, Data(#"{"status_code":"IN_PROGRESS"}"#.utf8)) }
+        let ig = InstagramClient(config: cfg(), token: "tok-123456", http: http, pollSeconds: 60, pollTries: 12,
+                                 sleep: { slept.append($0) })
+        do { try await ig.waitFinished("123"); XCTFail() } catch {}
+        XCTAssertEqual(slept.first!, 2, accuracy: 0.001)
+        XCTAssertEqual(slept[1], 3, accuracy: 0.001)
+        XCTAssertEqual(slept.last!, 60, accuracy: 0.001)             // never above the documented once-a-minute
+        XCTAssertTrue(zip(slept, slept.dropFirst()).allSatisfy { $0 <= $1 })
+        XCTAssertLessThan(slept.reduce(0, +), 600)
+    }
+
+    func testMultiPhotoPostKeepsOrderUploadsInParallelAndCleansUp() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var items: [PublishItem] = []
+        for n in 1...5 {
+            let u = dir.appendingPathComponent("p\(n).jpg")
+            let bytes: [UInt8] = [0xFF, 0xD8, 0xFF, 0xE0, UInt8(n), 2, 3]
+            try Data(bytes).write(to: u)
+            items.append(PublishItem(url: u, digest: Files.sha256(Data(bytes)), caption: ""))
+        }
+        let lock = NSLock(); var childForUpload: [String: String] = [:]; var next = 0; var puts = 0, deletes = 0
+        var childrenParam = ""
+        let http = FakeHTTP { method, url, body in
+            lock.lock(); defer { lock.unlock() }
+            let u = url.absoluteString, b = body.map { String(decoding: $0, as: UTF8.self) } ?? ""
+            if method == "PUT" { puts += 1; return (200, Data()) }
+            if method == "DELETE" { deletes += 1; return (204, Data()) }
+            if u.hasSuffix("/media_publish") { return (200, Data(#"{"id":"900"}"#.utf8)) }
+            if u.contains("/media") {
+                if b.contains("is_carousel_item") {
+                    next += 1
+                    let image = b.components(separatedBy: "&").first { $0.hasPrefix("image_url=") } ?? ""
+                    childForUpload[image] = "\(100 + next)"
+                    return (200, Data("{\"id\":\"\(100 + next)\"}".utf8))
+                }
+                childrenParam = b.components(separatedBy: "&").first { $0.hasPrefix("children=") } ?? ""
+                return (200, Data(#"{"id":"500"}"#.utf8))
+            }
+            return (200, Data(#"{"status_code":"FINISHED"}"#.utf8))
+        }
+        let p = Publisher(ig: InstagramClient(config: cfg(), token: "tok-123456", http: http, sleep: { _ in }),
+                          storage: TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http),
+                          ledger: Ledger(url: dir.appendingPathComponent("l.json")))
+        let media = try await p.publishCarousel(items, caption: "c", log: { _ in })
+        XCTAssertEqual(media, "900")
+        XCTAssertEqual(puts, 5); XCTAssertEqual(deletes, 5)                  // every temporary file removed
+        let ids = childrenParam.dropFirst("children=".count).removingPercentEncoding!.split(separator: ",").map(String.init)
+        XCTAssertEqual(ids.count, 5); XCTAssertEqual(Set(ids).count, 5)
+        XCTAssertTrue(Ledger(url: dir.appendingPathComponent("l.json")).has(items[0].digest))
+    }
+
+    func testFailureNamesTheStepAndStillDeletesUploads() async throws {
+        let f = try tempJPEG(); let g = try tempJPEG("b.jpg")
+        let items = [PublishItem(url: f, digest: try Files.sha256(f), caption: ""), PublishItem(url: g, digest: try Files.sha256(g), caption: "")]
+        let lock = NSLock(); var deletes = 0
+        let http = FakeHTTP { method, url, _ in
+            lock.lock(); defer { lock.unlock() }
+            if method == "PUT" { return (200, Data()) }
+            if method == "DELETE" { deletes += 1; return (204, Data()) }
+            if url.absoluteString.contains("/media") {
+                return (400, Data(#"{"error":{"message":"Invalid user id","code":110,"error_subcode":2207018}}"#.utf8))
+            }
+            return (200, Data())
+        }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let p = Publisher(ig: InstagramClient(config: cfg(), token: "tok-123456", http: http, sleep: { _ in }),
+                          storage: TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http),
+                          ledger: Ledger(url: dir.appendingPathComponent("l.json")))
+        do { _ = try await p.publishCarousel(items, caption: "", log: { _ in }); XCTFail() } catch {
+            let m = (error as? IGPubError)?.message ?? ""
+            XCTAssertTrue(m.hasPrefix("建立 "), m); XCTAssertTrue(m.contains("失敗：Instagram 錯誤 110/2207018"), m)
+        }
+        XCTAssertGreaterThan(deletes, 0)
+        XCTAssertFalse(Ledger(url: dir.appendingPathComponent("l.json")).has(items[0].digest))
+    }
+}
+
+
+final class StagingTests: XCTestCase {
+    private func photo(_ n: UInt8) throws -> PublishItem {
+        let bytes: [UInt8] = [0xFF, 0xD8, 0xFF, 0xE0, n, 2, 3]
+        let u = try tempJPEG("s\(n).jpg", bytes: bytes)
+        return PublishItem(url: u, digest: Files.sha256(Data(bytes)), caption: "")
+    }
+
+    private final class Counter: @unchecked Sendable {
+        let lock = NSLock(); var puts = 0, deletes = 0, gets = 0
+        func bump(_ k: String) { lock.lock(); if k == "PUT" { puts += 1 } else if k == "DELETE" { deletes += 1 } else { gets += 1 }; lock.unlock() }
+    }
+
+    func testStagedPhotoIsUploadedOnceAndReusedByThePublisher() async throws {
+        let c = Counter()
+        let http = FakeHTTP { method, url, _ in
+            c.bump(method)
+            if method == "PUT" { return (200, Data()) }
+            if method == "DELETE" { return (204, Data()) }
+            if url.absoluteString.hasSuffix("/media_publish") { return (200, Data(#"{"id":"900"}"#.utf8)) }
+            if url.absoluteString.contains("/media") { return (200, Data(#"{"id":"500"}"#.utf8)) }
+            return (200, Data(#"{"status_code":"FINISHED"}"#.utf8))
+        }
+        let storage = TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http)
+        let item = try photo(1)
+        let stager = UploadStager(storage: storage, prepare: { try Publisher.prepareBytes($0, maxBytes: 8 << 20, shrinkOversize: false) })
+        await stager.stage(item); await stager.stage(item)                      // second call is a no-op
+        XCTAssertEqual(c.puts, 1)
+        let st = await stager.state(of: item.digest); XCTAssertEqual(st, .ready)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let p = Publisher(ig: InstagramClient(config: cfg(), token: "tok-123456", http: http, sleep: { _ in }), storage: storage,
+                          ledger: Ledger(url: dir.appendingPathComponent("l.json")), stager: stager)
+        _ = try await p.publishSingles([item], log: { _ in })
+        XCTAssertEqual(c.puts, 1)                    // publishing did not upload again
+        XCTAssertEqual(c.deletes, 1)                 // and the staged copy was removed afterwards
+        let left = await stager.staged; XCTAssertTrue(left.isEmpty)
+    }
+
+    func testUnstagedPhotoIsStillUploadedAtPublishTime() async throws {
+        let c = Counter()
+        let http = FakeHTTP { method, url, _ in
+            c.bump(method)
+            if method == "PUT" { return (200, Data()) }
+            if method == "DELETE" { return (204, Data()) }
+            if url.absoluteString.hasSuffix("/media_publish") { return (200, Data(#"{"id":"900"}"#.utf8)) }
+            if url.absoluteString.contains("/media") { return (200, Data(#"{"id":"500"}"#.utf8)) }
+            return (200, Data(#"{"status_code":"FINISHED"}"#.utf8))
+        }
+        let storage = TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http)
+        let stager = UploadStager(storage: storage, prepare: { try Publisher.prepareBytes($0, maxBytes: 8 << 20, shrinkOversize: false) })
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let p = Publisher(ig: InstagramClient(config: cfg(), token: "tok-123456", http: http, sleep: { _ in }), storage: storage,
+                          ledger: Ledger(url: dir.appendingPathComponent("l.json")), stager: stager)
+        _ = try await p.publishSingles([try photo(2)], log: { _ in })
+        XCTAssertEqual(c.puts, 1); XCTAssertEqual(c.deletes, 1)
+    }
+
+    func testDiscardDeletesTheStagedObject() async throws {
+        let c = Counter()
+        let http = FakeHTTP { method, _, _ in c.bump(method); return (200, Data()) }
+        let storage = TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http)
+        let a = try photo(3), b = try photo(4)
+        let stager = UploadStager(storage: storage, prepare: { try Publisher.prepareBytes($0, maxBytes: 8 << 20, shrinkOversize: false) })
+        await stager.stage(a); await stager.stage(b)
+        await stager.discard([a.digest])
+        XCTAssertEqual(c.deletes, 1)
+        let left = await stager.staged; XCTAssertEqual(left, [b.digest])
+        await stager.discardAll(); XCTAssertEqual(c.deletes, 2)
+    }
+
+    func testFailedUploadIsReportedAndNotKept() async throws {
+        let http = FakeHTTP { method, _, _ in method == "PUT" ? (403, Data()) : (200, Data()) }
+        let storage = TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http)
+        let a = try photo(5)
+        let stager = UploadStager(storage: storage, prepare: { try Publisher.prepareBytes($0, maxBytes: 8 << 20, shrinkOversize: false) })
+        await stager.stage(a)
+        if case .failed = await stager.state(of: a.digest) {} else { XCTFail("expected a failure") }
+        let taken = await stager.take(a.digest); XCTAssertNil(taken)
+    }
+
+    func testKeysChangedAreReportedForLeftoverCleanup() async throws {
+        let http = FakeHTTP { _, _, _ in (200, Data()) }
+        let storage = TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http)
+        final class Seen: @unchecked Sendable { var last: [String] = []; let l = NSLock() }
+        let seen = Seen()
+        let stager = UploadStager(storage: storage, prepare: { try Publisher.prepareBytes($0, maxBytes: 8 << 20, shrinkOversize: false) },
+                                  onChange: { seen.l.lock(); seen.last = $0; seen.l.unlock() })
+        let a = try photo(6)
+        await stager.stage(a)
+        XCTAssertEqual(seen.last.count, 1)
+        _ = await stager.take(a.digest)
+        XCTAssertTrue(seen.last.isEmpty)
+    }
+
+    func testOnlyKeysShapedLikeOursAreEverDeleted() {
+        let prefix = "igpub/"
+        let good = prefix + String(repeating: "ab12", count: 8) + ".jpg"
+        XCTAssertTrue(StagingKeys.isOwn(good, prefix: prefix))
+        for bad in ["", "other/" + String(repeating: "a", count: 32) + ".jpg", prefix + "../secret.jpg", prefix + "photo.jpg",
+                    prefix + String(repeating: "g", count: 32) + ".jpg", prefix + String(repeating: "a", count: 31) + ".jpg",
+                    prefix + String(repeating: "a", count: 32) + ".png", good + "/x"] {
+            XCTAssertFalse(StagingKeys.isOwn(bad, prefix: prefix), bad)
+        }
+    }
+
+    func testPrivateAccountErrorIsExplainedInPlainLanguage() {
+        let e = InstagramClient.apiError(["code": 110, "error_subcode": 2207018, "message": "Invalid user id",
+                                          "error_user_msg": "無法存取以下用戶：someone"], status: 400, token: "tok-123456")
+        XCTAssertTrue(e.message.contains("私人帳號"))
+        XCTAssertTrue(e.message.contains("someone"))      // Instagram's own text with the account name is kept
+    }
+}
+
+
+final class AuditFollowUpTests: XCTestCase {
+    func testSignedUrlsNeverAppearInErrorText() {
+        let signed = "https://acct.r2.cloudflarestorage.com/b/igpub/abc.jpg?X-Amz-Credential=AKIAEXAMPLE%2F20261017&X-Amz-Signature=deadbeef"
+        let e = InstagramClient.apiError(["code": 9004, "message": "Could not fetch \(signed)", "error_user_msg": "bad: \(signed)"],
+                                         status: 400, token: "tok-123456")
+        XCTAssertFalse(e.message.contains("X-Amz"), e.message)
+        XCTAssertFalse(e.message.contains("AKIAEXAMPLE"), e.message)
+        XCTAssertTrue(e.message.contains("<網址>"))
+    }
+
+    func testAPublishedPostIsNeverReportedAsFailedBecauseTheLedgerCouldNotBeWritten() async throws {
+        let f = try tempJPEG()
+        let http = FakeHTTP { method, url, _ in
+            if method == "PUT" { return (200, Data()) }
+            if method == "DELETE" { return (204, Data()) }
+            if url.absoluteString.hasSuffix("/media_publish") { return (200, Data(#"{"id":"900"}"#.utf8)) }
+            if url.absoluteString.contains("/media") { return (200, Data(#"{"id":"500"}"#.utf8)) }
+            return (200, Data(#"{"status_code":"FINISHED"}"#.utf8))
+        }
+        // The ledger lives under a regular FILE, so writing it must fail.
+        let blocker = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("x".utf8).write(to: blocker)
+        let p = Publisher(ig: InstagramClient(config: cfg(), token: "tok-123456", http: http, sleep: { _ in }),
+                          storage: TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http),
+                          ledger: Ledger(url: blocker.appendingPathComponent("p.json")))
+        final class Lines: @unchecked Sendable { var all: [String] = [] }
+        var lines: [String] = []
+        let ids = try await p.publishSingles([PublishItem(url: f, digest: try Files.sha256(f), caption: "")], log: { lines.append($0) })
+        XCTAssertEqual(ids, ["900"])                                       // success is reported
+        XCTAssertTrue(lines.contains { $0.hasPrefix("警告") })              // with a warning, so nobody posts it twice
+    }
+
+    func testDiscardRightAfterStageNeverLeavesAnObjectBehind() async throws {
+        let lock = NSLock(); var puts = 0, deletes = 0
+        let http = FakeHTTP { method, _, _ in
+            lock.lock(); defer { lock.unlock() }
+            if method == "PUT" { puts += 1 } else if method == "DELETE" { deletes += 1 }
+            return (200, Data())
+        }
+        let storage = TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http)
+        let f = try tempJPEG()
+        let item = PublishItem(url: f, digest: try Files.sha256(f), caption: "")
+        for _ in 0..<20 {
+            let stager = UploadStager(storage: storage, prepare: { try Publisher.prepareBytes($0, maxBytes: 8 << 20, shrinkOversize: false) })
+            async let staging: Void = stager.stage(item)
+            await stager.discard([item.digest])
+            await staging
+            await stager.discardAll()
+            let left = await stager.staged
+            XCTAssertTrue(left.isEmpty)
+        }
+        XCTAssertEqual(puts, deletes, "every uploaded object must have been deleted")
     }
 }

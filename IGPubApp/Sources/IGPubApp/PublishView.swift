@@ -13,21 +13,30 @@ struct PublishView: View {
         AppShell {
             MainSidebar()
         } main: {
-            if model.reviewing {
-                PageScaffold(eyebrow: "預覽", title: "確認發佈內容",
-                             subtitle: "這是發佈後在 Instagram 的樣子，可以在這裡補文案、替代文字、標記人。確認沒問題再發佈。",
-                             wide: true) {
-                    ReviewContent()
-                } footer: {
-                    reviewFooter
-                }
-            } else {
-                PageScaffold(eyebrow: "發佈", title: "選照片，按發佈",
-                             subtitle: "把 JPEG 照片或資料夾拖進來，同名的 .txt 會自動當作文案。貼文發佈後立刻公開，無法由程式撤回。",
+            switch model.flow {
+            case .select:
+                PageScaffold(eyebrow: "步驟 1／3", title: "選擇圖片",
+                             subtitle: "把 JPEG 照片或資料夾拖進來，勾選要發的照片。同名的 .txt 會自動當作文案。",
                              wide: true) {
                     content
                 } footer: {
-                    footer
+                    selectFooter
+                }
+            case .edit:
+                PageScaffold(eyebrow: "步驟 2／3", title: "編輯內容",
+                             subtitle: "補文案、替代文字、標記人，左邊即時顯示發佈後的樣子。照片在這一步就會先暫存上傳，之後按發佈就不用再等上傳。",
+                             wide: true) {
+                    EditContent()
+                } footer: {
+                    editFooter
+                }
+            case .send:
+                PageScaffold(eyebrow: "步驟 3／3", title: "發佈",
+                             subtitle: "最後確認。這是發佈後在 Instagram 的樣子；貼文發佈後立刻公開，這個 App 無法撤回。",
+                             wide: true) {
+                    SendContent()
+                } footer: {
+                    sendFooter
                 }
             }
         }
@@ -53,13 +62,12 @@ struct PublishView: View {
 
     @ViewBuilder private var content: some View {
         UpdateBanner()
-        if !model.progress.isEmpty { ProgressPanel() }
         if let e = model.errorText { ErrorBanner(text: e, error: model.lastError) }
         HStack(spacing: Theme.Space.m) {
             ModePicker(mode: $model.mode)
             Spacer()
             Button(style == .darkroom ? "＋ 加入照片…" : "加入照片…") { importing = true }.buttonStyle(.igPlainSmall)
-            Button("清空") { model.items = [] }.buttonStyle(.igText)
+            Button("清空") { model.clearItems() }.buttonStyle(.igText)
                 .disabled(model.busy || model.items.isEmpty)
         }
         if !model.skipped.isEmpty {
@@ -74,7 +82,7 @@ struct PublishView: View {
             }
         }
         if !model.items.isEmpty {
-            Text("點縮圖選取或取消；按住 Shift 再點另一張，可連選中間所有照片。")
+            Text("點縮圖選取或取消；按住 Shift 再點另一張，可連選中間所有照片。拖曳縮圖或按右鍵可以調整順序，多張貼文就是依這個順序排。")
                 .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 168, maximum: 240), spacing: Theme.Space.l, alignment: .top)],
                       alignment: .leading, spacing: Theme.Space.l) {
@@ -89,7 +97,7 @@ struct PublishView: View {
                     Text(model.items.isEmpty ? "還沒有照片" : "再加入照片").font(Theme.Font.title).foregroundStyle(Theme.ink)
                     Text("把 JPEG 或資料夾拖到視窗裡，或按這裡選擇。").font(Theme.Font.callout).foregroundStyle(Theme.ink2)
                     if let c = model.config {
-                        Text("只收 .jpg／.jpeg，單檔上限 \(c.maxBytes / (1024 * 1024)) MB。同名的 .txt 會自動當作文案。")
+                        Text("只收 .jpg／.jpeg。同名的 .txt 會自動當作文案。超過 \(c.maxBytes / (1024 * 1024)) MB 的照片依「設定 → 發佈預設」處理（預設照原檔上傳，畫質不變）。")
                             .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
                     }
                 }
@@ -102,40 +110,51 @@ struct PublishView: View {
         .accessibilityLabel("加入照片：選擇 JPEG 或資料夾")
     }
 
-    // MARK: footer
+    // MARK: footers
 
-    @ViewBuilder private var footer: some View {
+    private var postsSummary: String {
         let n = model.chosen.count
-        let carousel = model.mode == .carousel
+        return model.mode == .carousel ? "已勾選 \(n) 張 · 合成 1 則多張貼文" : "已勾選 \(n) 張 · 每張各一則"
+    }
+
+    @ViewBuilder private var selectFooter: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
-            Text(carousel ? "已勾選 \(n) 張 · 合成 1 則多張貼文" : "已勾選 \(n) 張 · 每張各一則")
-                .font(Theme.Font.label).foregroundStyle(Theme.ink)
-            Text(model.publishProblem.flatMap { model.items.isEmpty ? nil : $0 } ?? "下一步會看到發佈後的預覽。")
+            Text(postsSummary).font(Theme.Font.label).foregroundStyle(Theme.ink)
+            Text(model.chosen.isEmpty ? "先勾選至少一張照片。" : "下一步：編輯文案與設定。")
                 .font(Theme.Font.caption).foregroundStyle(Theme.ink3).lineLimit(1)
         }
         Spacer()
-        if model.busy {
-            Text("發佈中…").font(Theme.Font.callout).foregroundStyle(Theme.ink3)
-        }
-        Button(style == .darkroom ? "預覽並發佈 →" : "預覽並發佈…") { model.reviewing = true }
-            .buttonStyle(.igPrimary)
-            .disabled(model.busy || model.publishProblem != nil)
+        Button(style == .darkroom ? "下一步：編輯內容 →" : "下一步：編輯內容") { model.go(.edit) }
+            .buttonStyle(.igPrimary).disabled(!model.canGo(.edit))
     }
 
-    @ViewBuilder private var reviewFooter: some View {
-        let n = model.chosen.count
-        let carousel = model.mode == .carousel
+    @ViewBuilder private var editFooter: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
-            Text(carousel ? "1 則多張貼文 · \(n) 張" : "\(n) 則貼文")
-                .font(Theme.Font.label).foregroundStyle(Theme.ink)
-            Text(model.publishProblem ?? "按下發佈前，還會再確認一次。")
+            Text(postsSummary).font(Theme.Font.label).foregroundStyle(Theme.ink)
+            Text(model.publishProblem ?? "確認內容沒問題，就到下一步。")
                 .font(Theme.Font.caption).foregroundStyle(model.publishProblem == nil ? Theme.ink3 : Theme.danger).lineLimit(1)
         }
         Spacer()
-        Button("返回修改") { model.reviewing = false }.buttonStyle(.igPlain).disabled(model.busy)
-        Button(style == .darkroom ? "發佈 →" : "發佈…") { confirming = true }
-            .buttonStyle(.igPrimary)
-            .disabled(model.busy || model.publishProblem != nil)
+        Button("返回選擇圖片") { model.go(.select) }.buttonStyle(.igPlain)
+        Button(style == .darkroom ? "下一步：發佈 →" : "下一步：發佈") { model.go(.send) }
+            .buttonStyle(.igPrimary).disabled(!model.canGo(.send))
+    }
+
+    @ViewBuilder private var sendFooter: some View {
+        let finished = model.progressFinished && model.chosen.isEmpty
+        VStack(alignment: .leading, spacing: Theme.Space.xs) {
+            Text(model.busy ? "發佈中…" : postsSummary).font(Theme.Font.label).foregroundStyle(Theme.ink)
+            Text(model.publishProblem.flatMap { model.chosen.isEmpty ? nil : $0 } ?? "按下發佈後還會再確認一次。")
+                .font(Theme.Font.caption).foregroundStyle(Theme.ink3).lineLimit(1)
+        }
+        Spacer()
+        if finished {
+            Button("回到選擇圖片") { model.clearProgress(); model.go(.select) }.buttonStyle(.igPrimary)
+        } else {
+            Button("返回編輯內容") { model.go(.edit) }.buttonStyle(.igPlain).disabled(model.busy)
+            Button(style == .darkroom ? "發佈 →" : "發佈…") { confirming = true }
+                .buttonStyle(.igPrimary).disabled(model.busy || model.publishProblem != nil)
+        }
     }
 }
 
@@ -153,8 +172,10 @@ struct MainSidebar: View {
         .padding(.horizontal, Theme.Space.m)
         .frame(height: Theme.sidebarRowHeight, alignment: .leading)
         VStack(spacing: Theme.Space.xs) {
-            SidebarNavRow(symbol: "photo.on.rectangle", mark: "▸", title: "發佈", selected: true)
-                .accessibilityAddTraits(.isSelected)
+            Text("發佈流程").font(Theme.Font.caption).foregroundStyle(Theme.ink3)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Space.m)
+            ForEach(FlowStep.allCases) { StepRow(step: $0) }
+            Rectangle().fill(Theme.sidebarLine).frame(height: 1).padding(.vertical, Theme.Space.s)
             SettingsLink {
                 SidebarNavRow(symbol: "gearshape", mark: "→", title: "設定")
             }
@@ -203,14 +224,19 @@ struct CaptionEditor: View {
     var body: some View {
         let over = text.count > AppConfig.maxCaption
         VStack(alignment: .trailing, spacing: Theme.Space.xs) {
-            TextField("文案（選填）", text: $text, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(Theme.Font.body).lineSpacing(Theme.calloutLineSpacing)
-                .lineLimit(2...5)
-                .padding(Theme.Space.m)
-                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.controlRadius))
-                .overlay(RoundedRectangle(cornerRadius: Theme.controlRadius)
-                    .strokeBorder(over ? Theme.danger : Theme.lineStrong, lineWidth: over ? 1.5 : 1))
+            // TextEditor, not TextField: Return must insert a line break in a caption. No overlaid placeholder: it never
+            // lines up with the caret, so the hint lives outside the box.
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $text)
+                    .font(Theme.Font.body).lineSpacing(Theme.calloutLineSpacing)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 120, maxHeight: 240)
+                    .padding(.horizontal, Theme.Space.s)
+                    .padding(.top, Theme.Space.m).padding(.bottom, Theme.Space.s)   // text starts a little below the border
+            }
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.controlRadius))
+            .overlay(RoundedRectangle(cornerRadius: Theme.controlRadius)
+                .strokeBorder(over ? Theme.danger : Theme.lineStrong, lineWidth: over ? 1.5 : 1))
                 .accessibilityLabel(label)
             Text((over ? "超過上限：" : "") + "\(String(text.count)) / \(String(AppConfig.maxCaption))")
                 .font(Theme.Font.caption).monospacedDigit()
@@ -225,6 +251,7 @@ private struct PhotoTile: View {
     @Binding var item: PhotoItem
     let order: Int?        // position among the checked photos
     @Environment(\.iconStyle) private var style
+    @State private var dropTargeted = false
 
     var body: some View {
         let name = item.url.lastPathComponent
@@ -262,6 +289,9 @@ private struct PhotoTile: View {
                         Text(ByteCountFormatter.string(fromByteCount: Int64(item.bytes), countStyle: .file))
                             .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
                     }
+                    if item.bytes > (model.config?.maxBytes ?? Int.max) {
+                        Text(model.autoShrink ? "發佈時縮小" : "超過 8 MB，原檔上傳").font(Theme.Font.caption).foregroundStyle(Theme.warnText)
+                    }
                     if item.alreadyPublished {
                         Text(item.selected ? "已發過，仍會再發" : "已發過")
                             .font(Theme.Font.caption).foregroundStyle(Theme.warnText)
@@ -273,16 +303,76 @@ private struct PhotoTile: View {
         .padding(Theme.Space.s)
         .background(item.selected ? Theme.surface : Theme.surfaceMuted, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
         .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius)
-            .strokeBorder(item.selected ? Theme.accent : Theme.line, lineWidth: item.selected ? 1.5 : 1))
+            .strokeBorder(dropTargeted ? Theme.ink : (item.selected ? Theme.accent : Theme.line),
+                          lineWidth: dropTargeted ? 3 : (item.selected ? 1.5 : 1)))
+        .draggable(item.id.uuidString)
+        .dropDestination(for: String.self) { ids, _ in
+            guard let s = ids.first, let dragged = UUID(uuidString: s), dragged != item.id else { return false }
+            model.moveItem(dragged, before: item.id)      // dropped on a photo: goes just before it
+            return true
+        } isTargeted: { dropTargeted = $0 }
+        .contextMenu {
+            Button("移到最前面") { model.moveItem(item.id, before: model.items.first?.id) }
+            Button("往前一格") { model.shiftItem(item.id, by: -1) }
+            Button("往後一格") { model.shiftItem(item.id, by: 1) }
+            Button("移到最後面") { model.moveItem(item.id, before: nil) }
+        }
     }
 }
 
-/// The page before publishing: every post as it will look, with its settings next to it.
-private struct ReviewContent: View {
+/// One step of the flow in the sidebar: number (or a check once passed), title, a short status.
+private struct StepRow: View {
+    @EnvironmentObject var model: AppModel
+    let step: FlowStep
+    var body: some View {
+        let current = model.flow == step
+        let passed = step.rawValue < model.flow.rawValue
+        let enabled = model.canGo(step) || current
+        Button { model.go(step) } label: {
+            HStack(spacing: Theme.Space.m) {
+                ZStack {
+                    Circle().fill(current ? Theme.accent : (passed ? Theme.success : Theme.segment))
+                    if passed { Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(.white) }
+                    else { Text("\(step.rawValue + 1)").font(Theme.Font.label).foregroundStyle(current ? .white : Theme.ink2) }
+                }
+                .frame(width: 24, height: 24)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(step.title).font(current ? Theme.Font.label : Theme.Font.callout).foregroundStyle(Theme.ink)
+                    if let d = detail { Text(d).font(Theme.Font.caption).foregroundStyle(Theme.ink3).lineLimit(1) }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Theme.Space.m)
+            .frame(height: Theme.controlHeight + 8)
+            .background {
+                if current { RoundedRectangle(cornerRadius: Theme.controlRadius).fill(Theme.surface).shadow(color: .black.opacity(0.08), radius: 1, y: 1) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.45)
+        .accessibilityLabel("步驟 \(step.rawValue + 1)：\(step.title)")
+        .accessibilityAddTraits(current ? .isSelected : [])
+    }
+
+    private var detail: String? {
+        switch step {
+        case .select: return model.chosen.isEmpty ? nil : "已選 \(model.chosen.count) 張"
+        case .edit:
+            guard model.flow != .select, !model.chosen.isEmpty else { return nil }
+            return "已暫存 \(model.stagedReady) / \(model.chosen.count)"
+        case .send: return nil
+        }
+    }
+}
+
+/// Step 2: every post with its settings next to a live preview, and the progress of the background upload.
+private struct EditContent: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         let picked = model.chosen
-        if let e = model.errorText { ErrorBanner(text: e, error: model.lastError) }
+        StagingCard()
         if model.mode == .carousel {
             PostEditor(ids: picked.map(\.id), carousel: true, number: 1)
         } else {
@@ -290,8 +380,67 @@ private struct ReviewContent: View {
                 PostEditor(ids: [p.id], carousel: false, number: i + 1)
             }
         }
-        Text("預覽依 Instagram 的版型與裁切規則模擬，實際畫面以 Instagram 為準。")
-            .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
+    }
+}
+
+private struct StagingCard: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let total = model.chosen.count, ready = model.stagedReady, failed = model.stagedFailed
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            HStack {
+                Text("先上傳到你的儲存空間").font(Theme.Font.label).foregroundStyle(Theme.ink)
+                Spacer()
+                Text("\(ready) / \(total) 張").font(Theme.Font.callout).monospacedDigit().foregroundStyle(Theme.ink3)
+            }
+            ProgressBar(value: total == 0 ? 0 : Double(ready) / Double(total)).accessibilityLabel("暫存進度")
+            Text(failed > 0
+                 ? "有 \(failed) 張暫存失敗，不影響發佈：按發佈時會再上傳一次。"
+                 : "這些暫存檔只放在你自己的 R2，隨機檔名；發佈完成會刪除，沒用到的會在下次打開 App 時清掉。")
+                .font(Theme.Font.caption).foregroundStyle(failed > 0 ? Theme.warnText : Theme.ink3)
+        }
+        .card(padding: Theme.cardPaddingCompact)
+    }
+}
+
+/// A finished-looking preview of one post (read-only; page through the photos of a multi-photo post).
+private struct StaticPreview: View {
+    @EnvironmentObject var model: AppModel
+    let ids: [UUID]
+    let caption: String
+    let collaborators: [String]
+    let ai: Bool
+    @State private var index = 0
+    var body: some View {
+        PostPreview(items: ids.compactMap { id in model.items.first { $0.id == id } }, caption: caption,
+                    collaborators: collaborators, aiGenerated: ai, username: model.config?.username, width: 360, index: $index)
+    }
+}
+
+/// Step 3: the final look of everything that will go out, and the progress once it does.
+private struct SendContent: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        if !model.progress.isEmpty { ProgressPanel() }
+        if let e = model.errorText { ErrorBanner(text: e, error: model.lastError) }
+        let picked = model.chosen
+        if !picked.isEmpty {
+            Text("發佈後會長這樣").font(Theme.Font.label).foregroundStyle(Theme.ink)
+            if model.mode == .carousel {
+                StaticPreview(ids: picked.map(\.id), caption: model.carouselCaption.trimmingCharacters(in: .whitespacesAndNewlines),
+                              collaborators: Usernames.parseList(model.carouselCollaboratorsText) ?? [], ai: model.carouselAI)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 360), spacing: Theme.Space.xl, alignment: .top)],
+                          alignment: .leading, spacing: Theme.Space.xl) {
+                    ForEach(picked) { p in
+                        StaticPreview(ids: [p.id], caption: p.caption.trimmingCharacters(in: .whitespacesAndNewlines),
+                                      collaborators: p.extras?.collaborators ?? [], ai: p.aiGenerated)
+                    }
+                }
+            }
+            Text("預覽依 Instagram 的版型與裁切規則模擬，實際畫面以 Instagram 為準。")
+                .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
+        }
     }
 }
 
@@ -314,7 +463,7 @@ private struct ConfirmSheet: View {
             }
             .frame(width: Theme.statusSlot.width, height: Theme.statusSlot.height, alignment: .leading)
             .accessibilityHidden(true)
-            Text(carousel ? "公開發佈 1 則輪播（\(picked.count) 張）？" : "公開發佈 \(picked.count) 則貼文？")
+            Text(carousel ? "公開發佈 1 則多張貼文（\(picked.count) 張）？" : "公開發佈 \(picked.count) 則貼文？")
                 .font(Theme.Font.title).foregroundStyle(Theme.ink)
                 .accessibilityAddTraits(.isHeader)
             (Text("會發佈到 ") + Text(model.config?.username.map { "@\($0)" } ?? "你的帳號").font(Theme.Font.monoStrong)

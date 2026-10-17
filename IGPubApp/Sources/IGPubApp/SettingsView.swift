@@ -254,6 +254,11 @@ private struct DefaultsTab: View {
                 .disabled(!has)
             }
             Text("Instagram 的 JPEG 上限是 \(AppModel.maxMB) MB。").font(Theme.Font.caption).foregroundStyle(Theme.ink3)
+            Toggle("超過上限的照片，發佈時自動縮小", isOn: $model.autoShrink).toggleStyle(.checkbox).font(Theme.Font.callout)
+            Text(model.autoShrink
+                 ? "會先在原尺寸降一點畫質，不夠才縮小尺寸，並轉成 sRGB；原檔不動。"
+                 : "預設關閉：照原檔上傳，畫質完全不變。超過上限的照片 Instagram 可能會拒絕，那時再開啟這個選項。")
+                .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
         }
         .card(padding: Theme.cardPaddingCompact)
 
@@ -326,6 +331,14 @@ private struct PrivacyTab: View {
             }
             .padding(Theme.Space.l)
             Rectangle().fill(Theme.lineSoft).frame(height: 1)
+            VStack(alignment: .leading, spacing: Theme.Space.s) {
+                SectionTitle(text: "鑰匙圈裡的項目", trailing: "只有這一個")
+                KeychainItemTable()
+                Text("到「鑰匙圈存取」搜尋 img_to_ig 就能找到。macOS 詢問時輸入的是你的 Mac 登入密碼，App 拿不到它。")
+                    .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
+            }
+            .padding(Theme.Space.l)
+            Rectangle().fill(Theme.lineSoft).frame(height: 1)
             SectionTitle(text: "發佈歷史", trailing: "共 \(model.history.count) 筆 · 只存在這台 Mac")
                 .padding(Theme.Space.l)
             Rectangle().fill(Theme.lineSoft).frame(height: 1)
@@ -335,7 +348,7 @@ private struct PrivacyTab: View {
             ForEach(Array(model.history.prefix(200).enumerated()), id: \.element.id) { i, e in
                 if i > 0 { Rectangle().fill(Theme.lineSoft).frame(height: 1) }
                 HStack(spacing: Theme.Space.m) {
-                    Text(e.name == "carousel" ? "輪播中的一張" : (e.name.isEmpty ? "（未記錄檔名）" : e.name))
+                    Text(e.name == "carousel" ? "多張貼文中的一張" : (e.name.isEmpty ? "（未記錄檔名）" : e.name))
                         .font(Theme.Font.callout).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: Theme.Space.m)
                     Text(e.at.map { Self.dateFormat.string(from: $0) } ?? "日期未知").font(Theme.Font.caption)
