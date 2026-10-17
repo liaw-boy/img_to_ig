@@ -10,6 +10,7 @@
 ![Swift 5.9](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![無第三方套件](https://img.shields.io/badge/第三方套件-無-2ea44f)
+![MIT](https://img.shields.io/badge/授權-MIT-blue)
 
 [下載](https://github.com/liaw-boy/img_to_ig/releases/latest) ·
 [快速開始](#快速開始) ·
@@ -382,4 +383,9 @@ python3.12 -m unittest discover -s tests -t .     # Python 測試
 
 ## 授權
 
-尚未選定授權。在加上 LICENSE 檔之前，依法預設保留所有權利。
+[MIT License](LICENSE)。你可以自由使用、修改、散佈，但要保留著作權聲明；軟體按現狀提供，不附任何保證。
+
+- MIT 只授權這份程式碼。**Instagram、Meta、Cloudflare 的名稱與標誌屬於它們各自的擁有者**，本專案與它們沒有關係。
+- **簽章憑證不在授權範圍內。** 如果你要自己改版發佈，請用你自己的簽章憑證，並把
+  `UpdateChecker.repo`（`IGPubApp/Sources/IGPubCore/Updater.swift`）改成你自己的 repo，
+  否則你的使用者會去檢查本專案的更新，而且收不到你的版本。
