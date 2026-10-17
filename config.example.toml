@@ -1,0 +1,18 @@
+# Copy to config.toml (git-ignored) and fill in. Tokens and keys do NOT go here: see README "密鑰".
+
+[instagram]
+user_id = "17841400000000000"        # numeric Instagram user id (not the @name)
+api_host = "graph.instagram.com"     # Instagram Login; "graph.facebook.com" for Facebook Login
+api_version = ""                     # "" = unversioned; pin e.g. "v23.0" if you want
+
+[storage]                            # any S3-compatible bucket (Cloudflare R2, AWS S3, MinIO ...)
+endpoint = "https://<account-id>.r2.cloudflarestorage.com"
+region = "auto"                      # R2: "auto"; AWS: e.g. "ap-northeast-1"
+bucket = "my-igpub-bucket"
+prefix = "igpub/"
+url_expiry = 900                     # seconds the signed URL Instagram fetches stays valid
+
+[options]
+default_caption = ""
+max_per_run = 10                     # single posts per run
+max_bytes = 8388608                  # reject bigger files (8 MB); raise it if Instagram accepts yours

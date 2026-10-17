@@ -1,0 +1,9 @@
+[project]
+name = "igpub"
+version = "0.1.0"
+description = "Publish JPEG photos to Instagram through the official Content Publishing API"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+igpub = "igpub.cli:main"
