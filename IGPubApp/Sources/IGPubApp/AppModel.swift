@@ -140,6 +140,8 @@ final class AppModel: ObservableObject {
     @Published var showKeychainNotice = false
     private var keychainNoticeContinuation: CheckedContinuation<Void, Never>?
     @Published var updateState: UpdateState = .idle
+    /// The update window over the main window (opened when a check finds a newer version, or from the notification).
+    @Published var showUpdateSheet = false
     /// Photos over the size limit: false = upload the original untouched (best quality; Instagram may refuse it).
     @Published var autoShrink: Bool {
         didSet {
@@ -778,6 +780,8 @@ final class AppModel: ObservableObject {
         do {
             if let r = try await UpdateChecker(http: URLSessionHTTP()).newerRelease(than: currentVersion) {
                 updateState = .available(r)
+                showUpdateSheet = true
+                if !manual { await UpdateNotifier.shared.post(version: r.version, current: currentVersion) }
             } else {
                 updateState = manual ? .upToDate : .idle
             }
@@ -814,8 +818,13 @@ final class AppModel: ObservableObject {
         cfg.createsNewApplicationInstance = true
         NSWorkspace.shared.openApplication(at: running, configuration: cfg) { _, error in
             DispatchQueue.main.async {
-                if error == nil { NSApp.terminate(nil) }
-                else { self.updateState = .failed("已更新到 \(release.version)，但自動重新開啟失敗，請手動重新開啟 img_to_ig", nil) }
+                if error == nil {
+                    // An open sheet keeps NSApp.terminate from quitting, which would leave the old version running.
+                    self.showUpdateSheet = false
+                    NSApp.windows.forEach { w in w.attachedSheet.map { w.endSheet($0) } }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { exit(0) }   // already installed; never linger
+                } else { self.updateState = .failed("已更新到 \(release.version)，但自動重新開啟失敗，請手動重新開啟 img_to_ig", nil) }
             }
         }
     }

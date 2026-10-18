@@ -24,7 +24,11 @@ struct IGPubApp: App {
             .sheet(isPresented: $model.showKeychainNotice) {
                 KeychainNoticeSheet().environmentObject(model).interactiveDismissDisabled()
             }
+            .sheet(isPresented: updateSheetShown) {
+                UpdateSheet().environmentObject(model).interactiveDismissDisabled()
+            }
             .onAppear {
+                UpdateNotifier.shared.onOpen = { [weak model] in model?.showUpdateSheet = true }
                 Self.enlargeWindowOnce()
                 NSApp.setActivationPolicy(.regular)
                 NSApp.activate(ignoringOtherApps: true)
@@ -55,6 +59,17 @@ struct IGPubApp: App {
                 .foregroundStyle(Theme.ink)
         }
         .windowResizability(.contentSize)
+    }
+
+    /// Waits for the Keychain notice to close (one sheet at a time) and only while there is something to show.
+    private var updateSheetShown: Binding<Bool> {
+        Binding(
+            get: {
+                guard model.showUpdateSheet, !model.showKeychainNotice else { return false }
+                switch model.updateState { case .idle, .checking, .upToDate: return false; default: return true }
+            },
+            set: { if !$0 { model.showUpdateSheet = false } }
+        )
     }
 
     /// macOS restores the last window size, so a bigger default would never show; enlarge once, then leave it to the user.
