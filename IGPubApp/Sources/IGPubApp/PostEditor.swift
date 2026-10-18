@@ -59,8 +59,8 @@ struct PostEditor: View {
             }
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 Text("合作夥伴（最多 \(PostExtras.maxCollaborators) 個帳號）").font(Theme.Font.label).foregroundStyle(Theme.ink)
-                TextField("@帳號，用逗號或空格分開（選填）", text: collabBinding)
-                    .igField(valid: collaboratorsValid, mono: true)
+                UsernameChipsField(text: collabBinding, max: PostExtras.maxCollaborators, frequent: model.frequentCollaborators)
+                    .id(carousel ? "carousel" : currentID.map(\.uuidString) ?? "")   // a fresh field (and draft) per photo
                 Text("對方必須是公開帳號，名稱要打對，否則 Instagram 會拒絕整則貼文。").font(Theme.Font.caption).foregroundStyle(Theme.ink3)
                 Toggle("這則貼文是 AI 生成的", isOn: aiBinding).toggleStyle(.checkbox).font(Theme.Font.callout)
             }
@@ -94,7 +94,7 @@ struct PostEditor: View {
                         Button("取消") { pending = nil }.buttonStyle(.igText)
                     }
                     if !pendingName.isEmpty, Usernames.normalize(pendingName) == nil {
-                        Text("帳號只能有英文字母、數字、句點和底線").font(Theme.Font.caption).foregroundStyle(Theme.danger)
+                        Text("帳號只能有英文字母、數字、句點和底線，句點不能在頭尾或連續出現").font(Theme.Font.caption).foregroundStyle(Theme.danger)
                     }
                 }
                 ForEach(tags) { t in
@@ -107,13 +107,6 @@ struct PostEditor: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private var collaboratorsValid: Bool? {
-        let t = collabBinding.wrappedValue
-        if t.trimmingCharacters(in: .whitespaces).isEmpty { return nil }
-        guard let l = Usernames.parseList(t) else { return false }
-        return (try? PostExtras(collaborators: l).validate()) != nil
     }
 
     private func mutateOptions(_ f: (inout ItemOptions) -> Void) {

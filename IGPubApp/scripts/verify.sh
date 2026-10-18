@@ -10,27 +10,49 @@ if pgrep -f "$(pwd)/build/img_to_ig.app/Contents/MacOS" >/dev/null 2>&1; then
   echo "STOP: img_to_ig is running from build/. Quit it (or run it from /Applications) before rebuilding." >&2
   exit 1
 fi
-step "1/5 build (debug, warnings shown)"
+step "1/6 build (debug, warnings shown)"
 swift build 2>&1 | tee .build/verify-build.log | grep -E "warning:|error:" || true
 grep -q "error:" .build/verify-build.log && { echo "FAIL: build errors"; exit 1; }
 
-step "2/5 unit tests (fake network only)"
+step "2/6 unit tests (fake network only)"
 swift test 2>&1 | tee .build/verify-test.log | grep -E "Executed .* tests|error|failed" | tail -5
 grep -q "with 0 failures" .build/verify-test.log || { echo "FAIL: tests"; exit 1; }
 
-step "3/5 secret scan (source must not contain credentials)"
+step "3/6 secret scan (source must not contain credentials)"
 if grep -rInE "(EAA[A-Za-z0-9]{20,}|IGQV[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY)" Sources scripts Package.swift; then
   echo "FAIL: possible credential in source"; exit 1
 fi
 echo "ok"
 
-step "4/5 app bundle + signature"
+step "4/6 personal data scan (local list, never committed)"
+# One term per line in .git/info/personal-terms (accounts, ids, bucket names... of whoever develops here).
+# The list stays on this Mac; without it the scan is skipped, so a fresh clone still passes.
+TERMS="$(cd "$(git rev-parse --git-common-dir)" && pwd)/info/personal-terms"
+if [ -s "$TERMS" ]; then
+  # Whole repo: tracked plus untracked-but-not-ignored files (what could be committed next).
+  HITS="$(cd "$(git rev-parse --show-toplevel)" && { git grep --untracked -n -I -i -F -f "$TERMS" -- . || true; } | cut -d: -f1,2)"
+  # File names too (contents are covered above), and author/committer as well as the message of unpushed commits.
+  NAMES="$(cd "$(git rev-parse --show-toplevel)" && git ls-files --cached --others --exclude-standard | grep -c -i -F -f "$TERMS" || true)"
+  MSGS="$(git log --format='%an%n%ae%n%cn%n%ce%n%B' '@{upstream}..HEAD' 2>/dev/null | grep -c -i -F -f "$TERMS" || true)"
+  if [ -n "$HITS" ] || [ "${NAMES:-0}" -gt 0 ] || [ "${MSGS:-0}" -gt 0 ]; then
+    echo "FAIL: personal data found (file:line shown, the matched text is not printed):"
+    [ -n "$HITS" ] && echo "$HITS"
+    [ "${NAMES:-0}" -gt 0 ] && echo "file names: $NAMES"
+    [ "${MSGS:-0}" -gt 0 ] && echo "unpushed commit messages: $MSGS line(s)"
+    exit 1
+  fi
+  echo "ok ($(grep -c . "$TERMS") terms)"
+else
+  echo "skipped (no .git/info/personal-terms on this Mac)"
+fi
+
+step "5/6 app bundle + signature"
 ./scripts/build_app.sh >/dev/null
 codesign --verify --strict build/img_to_ig.app
 codesign -dv build/img_to_ig.app 2>&1 | grep -q "flags=.*runtime" || { echo "FAIL: hardened runtime missing"; exit 1; }
 echo "ok: build/img_to_ig.app signed (ad-hoc, hardened runtime)"
 
-step "5/5 launch smoke test"
+step "6/6 launch smoke test"
 # Run a throw-away COPY and stop only that process (by PID). Never `open` or quit by name: that would close an
 # instance somebody is using (e.g. in the middle of publishing). IMG_TO_IG_SMOKE_TEST keeps it off the Keychain and network.
 SMOKE="$(mktemp -d)"

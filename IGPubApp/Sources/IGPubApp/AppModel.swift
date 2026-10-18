@@ -139,7 +139,11 @@ final class AppModel: ObservableObject {
     // preferences (UserDefaults)
     @Published var showKeychainNotice = false
     private var keychainNoticeContinuation: CheckedContinuation<Void, Never>?
-    @Published var updateState: UpdateState = .idle
+    @Published var updateState: UpdateState = .idle {
+        didSet { if UpdatePresentation(updateState, current: currentVersion) == nil { showUpdateSheet = false } }
+    }
+    /// Set right before the installer quits the old version, so the quit guard lets it through.
+    var quittingForUpdate = false
     /// The update window over the main window (opened when a check finds a newer version, or from the notification).
     @Published var showUpdateSheet = false
     /// Photos over the size limit: false = upload the original untouched (best quality; Instagram may refuse it).
@@ -148,6 +152,10 @@ final class AppModel: ObservableObject {
             defaults.set(autoShrink, forKey: "autoShrink")
             Task { await dropStaging() }          // the staged copies were made under the old setting
         }
+    }
+    /// Collaborators of posts that went out, offered as suggestions in the editor. Only on this Mac.
+    @Published var frequentCollaborators: FrequentUsernames {
+        didSet { if let d = try? JSONEncoder().encode(frequentCollaborators) { defaults.set(d, forKey: "frequentCollaborators") } }
     }
     @Published var autoCheckUpdates: Bool { didSet { defaults.set(autoCheckUpdates, forKey: "autoCheckUpdates") } }
     @Published var remindExpiry: Bool { didSet { defaults.set(remindExpiry, forKey: "remindExpiry") } }
@@ -171,6 +179,8 @@ final class AppModel: ObservableObject {
         doneSteps = Set((defaults.array(forKey: "doneSteps") as? [Int]) ?? [])
         remindExpiry = defaults.object(forKey: "remindExpiry") as? Bool ?? true
         autoCheckUpdates = defaults.object(forKey: "autoCheckUpdates") as? Bool ?? true
+        frequentCollaborators = defaults.data(forKey: "frequentCollaborators")
+            .flatMap { try? JSONDecoder().decode(FrequentUsernames.self, from: $0) }?.sanitized() ?? FrequentUsernames()
         autoShrink = defaults.object(forKey: "autoShrink") as? Bool ?? false
         let dm = defaults.string(forKey: "defaultMode").flatMap(PublishMode.init(rawValue:)) ?? .singles
         defaultMode = dm
@@ -180,6 +190,7 @@ final class AppModel: ObservableObject {
         showSetup = true
         refreshSecrets()
         showSetup = !isReady
+        UpdateNotifier.shared.onOpen = { [weak self] in self?.openUpdateFromNotification() }
     }
 
     var isReady: Bool {
@@ -445,8 +456,9 @@ final class AppModel: ObservableObject {
     }
 
     func publish() async {
+        guard !isUpdating else { return }      // the update quits the app; never start a publish it could cut short
         await prepareKeychainAccess()
-        guard !busy, publishProblem == nil, let cfg = config,
+        guard !busy, !isUpdating, publishProblem == nil, let cfg = config,
               let token = secrets.get(SecretName.accessToken),
               let ak = secrets.get(SecretName.s3AccessKey), let sk = secrets.get(SecretName.s3SecretKey) else { return }
         busy = true
@@ -512,6 +524,8 @@ final class AppModel: ObservableObject {
             }
         } else {
             for i in progress.indices { progress[i].state = .done }
+            frequentCollaborators.record(carousel ? (Usernames.parseList(carouselCollaboratorsText) ?? [])
+                                                  : picked.flatMap { $0.extras?.collaborators ?? [] })
             let digests = Set(picked.map { $0.digest })
             items.removeAll { digests.contains($0.digest) }
             for d in digests { stagedState[d] = nil }
@@ -616,7 +630,7 @@ final class AppModel: ObservableObject {
         testLines = []
         quota = nil
         clearProgress()
-        for k in ["draft", "doneSteps", IconStyle.key, "remindExpiry", "defaultMode", "maxPerRun", "autoCheckUpdates", "lastUpdateCheck", "keychainNoticeSeen", "autoShrink"] {
+        for k in ["draft", "doneSteps", IconStyle.key, "remindExpiry", "defaultMode", "maxPerRun", "autoCheckUpdates", "lastUpdateCheck", "keychainNoticeSeen", "autoShrink", "frequentCollaborators"] {
             defaults.removeObject(forKey: k)
         }
         remindExpiry = true
@@ -697,8 +711,10 @@ final class AppModel: ObservableObject {
 
     /// Uploads the selected photos (a few at a time) and removes copies of photos that are no longer selected.
     func syncStaging() async {
+        guard !isUpdating else { return }
         await prepareKeychainAccess()
-        guard let s = await makeStager() else { return }
+        guard !isUpdating, let s = await makeStager() else { return }
+        if isUpdating { await dropStaging(); return }   // the update started while the stager was being made
         stagingGeneration += 1
         let generation = stagingGeneration
         let items = chosen.map { PublishItem(url: $0.url, digest: $0.digest, caption: "") }
@@ -718,7 +734,7 @@ final class AppModel: ObservableObject {
             }
             for _ in 0..<min(Publisher.parallelPhotos, items.count) { next() }
             while await group.next() != nil {
-                if generation != self.stagingGeneration { group.cancelAll() }
+                if generation != self.stagingGeneration { group.cancelAll(); continue }   // drain, start nothing new
                 next()
             }
         }
@@ -732,9 +748,10 @@ final class AppModel: ObservableObject {
 
     private func dropStaging() async {
         stagingGeneration += 1
-        await stager?.discardAll()
+        let old = stager                    // detach first, so nobody picks up the closing stager meanwhile
         stager = nil
         stagerFingerprint = ""
+        await old?.discardAll()
         stagedState = [:]
     }
 
@@ -773,31 +790,70 @@ final class AppModel: ObservableObject {
         await checkForUpdates(manual: false)
     }
 
-    func checkForUpdates(manual: Bool) async {
+    /// The result shows in the update window (a menu check also reports "up to date" or a failure there).
+    /// `showSheet: false` from Settings, which shows the result itself: the window would open behind it.
+    func checkForUpdates(manual: Bool, showSheet: Bool = true) async {
         switch updateState { case .checking, .downloading, .installing: return; default: break }
         updateState = .checking
         defaults.set(Date(), forKey: "lastUpdateCheck")
         do {
             if let r = try await UpdateChecker(http: URLSessionHTTP()).newerRelease(than: currentVersion) {
                 updateState = .available(r)
-                showUpdateSheet = true
-                if !manual { await UpdateNotifier.shared.post(version: r.version, current: currentVersion) }
+                if showSheet { showUpdateSheet = true }
+                if !manual { await UpdateNotifier.shared.postIfInactive(version: r.version, current: currentVersion) }
             } else {
+                UpdateNotifier.shared.clear()
                 updateState = manual ? .upToDate : .idle
+                if manual && showSheet { showUpdateSheet = true }
             }
         } catch {
             updateState = manual ? .failed(error.localizedDescription, nil) : .idle   // a silent check never nags
+            if manual && showSheet { showUpdateSheet = true }
         }
     }
 
+    /// Downloading or installing an update: publishing and staging are refused until the app restarts.
+    var isUpdating: Bool {
+        switch updateState { case .downloading, .installing: return true; default: return false }
+    }
+
+    /// Clicking the notification: open the update window, or re-check when this launch has nothing to show
+    /// (the app was relaunched, or the update was dismissed meanwhile).
+    func openUpdateFromNotification() {
+        switch updateState {
+        case .available, .downloading, .installing:
+            showUpdateSheet = true
+        case .failed(_, let r) where r != nil:
+            showUpdateSheet = true
+        default:
+            Task { await checkForUpdates(manual: true) }
+        }
+    }
+
+    /// 稍後 / 關閉 anywhere: hide the update window and drop the notification.
+    func dismissUpdate() {
+        updateState = .idle
+        UpdateNotifier.shared.clear()
+    }
+
+    /// From an available release, or a retry after a failed attempt.
     func installUpdate() async {
-        guard case .available(let release) = updateState, !busy else { return }
+        let release: ReleaseInfo
+        switch updateState {
+        case .available(let r): release = r
+        case .failed(_, let r?): release = r
+        default: return
+        }
+        guard !busy else { return }
         let running = Bundle.main.bundleURL
         guard running.pathExtension == "app" else {
-            updateState = .failed("只有打包好的 App 能自動更新", release); return
+            updateState = .failed("只有打包好的 App 能自動更新", nil); return
         }
         let current = currentVersion
         updateState = .downloading
+        // Finish or cancel background staging first: the update quits this instance, and an upload still in
+        // flight would leave an object in the user's bucket while the new instance starts its own cleanup.
+        await dropStaging()
         let work = FileManager.default.temporaryDirectory.appendingPathComponent("img_to_ig-update-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: work) }
         do {
@@ -819,9 +875,11 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.openApplication(at: running, configuration: cfg) { _, error in
             DispatchQueue.main.async {
                 if error == nil {
-                    // An open sheet keeps NSApp.terminate from quitting, which would leave the old version running.
+                    // An open sheet keeps NSApp.terminate from quitting, which would leave the old version running:
+                    // let SwiftUI close it first, then quit.
                     self.showUpdateSheet = false
-                    NSApp.windows.forEach { w in w.attachedSheet.map { w.endSheet($0) } }
+                    self.quittingForUpdate = true
+                    UpdateNotifier.shared.clear()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 5) { exit(0) }   // already installed; never linger
                 } else { self.updateState = .failed("已更新到 \(release.version)，但自動重新開啟失敗，請手動重新開啟 img_to_ig", nil) }

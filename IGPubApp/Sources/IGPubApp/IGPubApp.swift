@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct IGPubApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
     @AppStorage(IconStyle.key) private var iconStyle: IconStyle = .symbols
 
@@ -28,7 +29,7 @@ struct IGPubApp: App {
                 UpdateSheet().environmentObject(model).interactiveDismissDisabled()
             }
             .onAppear {
-                UpdateNotifier.shared.onOpen = { [weak model] in model?.showUpdateSheet = true }
+                appDelegate.model = model
                 Self.enlargeWindowOnce()
                 NSApp.setActivationPolicy(.regular)
                 NSApp.activate(ignoringOtherApps: true)
@@ -36,6 +37,7 @@ struct IGPubApp: App {
         }
         .defaultSize(width: 1360, height: 900)
         .commands {
+            CommandGroup(replacing: .newItem) {}   // one main window: the update sheet and drafts assume a single one
             CommandGroup(after: .appInfo) {
                 Button("檢查更新…") { Task { await model.checkForUpdates(manual: true) } }
             }
@@ -65,8 +67,8 @@ struct IGPubApp: App {
     private var updateSheetShown: Binding<Bool> {
         Binding(
             get: {
-                guard model.showUpdateSheet, !model.showKeychainNotice else { return false }
-                switch model.updateState { case .idle, .checking, .upToDate: return false; default: return true }
+                model.showUpdateSheet && !model.showKeychainNotice
+                    && UpdatePresentation(model.updateState, current: model.currentVersion) != nil
             },
             set: { if !$0 { model.showUpdateSheet = false } }
         )

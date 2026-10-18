@@ -61,7 +61,6 @@ struct PublishView: View {
     // MARK: content column
 
     @ViewBuilder private var content: some View {
-        UpdateBanner()
         if let e = model.errorText { ErrorBanner(text: e, error: model.lastError) }
         HStack(spacing: Theme.Space.m) {
             ModePicker(mode: $model.mode)
@@ -479,6 +478,7 @@ private struct ConfirmSheet: View {
                     Task { await model.publish() }
                 }
                 .buttonStyle(.igPrimary)
+                .disabled(model.isUpdating)
             }
         }
         .padding(Theme.Space.xxl)
@@ -603,44 +603,3 @@ private struct ProgressBar: View {
 }
 
 
-/// Shown at the top of the publish page when a newer version exists (or while updating / on a manual check).
-struct UpdateBanner: View {
-    @EnvironmentObject var model: AppModel
-    var body: some View {
-        switch model.updateState {
-        case .idle, .checking:
-            EmptyView()
-        case .upToDate:
-            row(title: "目前已是最新版（\(model.currentVersion)）", detail: nil, release: nil, busy: false, canInstall: false)
-        case .available(let r):
-            row(title: "有新版 \(r.version)（目前 \(model.currentVersion)）", detail: r.notes, release: r, busy: false, canInstall: true)
-        case .downloading:
-            row(title: "下載並驗證新版中…", detail: nil, release: nil, busy: true, canInstall: false)
-        case .installing:
-            row(title: "安裝中，完成後會自動重新開啟", detail: nil, release: nil, busy: true, canInstall: false)
-        case .failed(let msg, let r):
-            row(title: "更新沒有完成", detail: msg, release: r, busy: false, canInstall: false)
-        }
-    }
-
-    private func row(title: String, detail: String?, release: ReleaseInfo?, busy: Bool, canInstall: Bool) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Space.s) {
-            Text(title).font(Theme.Font.bodyStrong).foregroundStyle(Theme.ink)
-            if let detail, !detail.isEmpty {
-                Text(verbatim: detail).font(Theme.Font.callout).foregroundStyle(Theme.ink2).lineLimit(5)   // plain text, never markdown
-            }
-            if !busy {
-                HStack(spacing: Theme.Space.s) {
-                    if canInstall {
-                        Button("立即更新") { Task { await model.installUpdate() } }
-                            .buttonStyle(.igPrimary).disabled(model.busy)
-                    }
-                    if let release { Button("查看說明") { NSWorkspace.shared.open(release.pageURL) }.buttonStyle(.igPlainSmall) }
-                    Button(canInstall ? "稍後" : "關閉") { model.updateState = .idle }.buttonStyle(.igText)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card(padding: Theme.cardPaddingCompact, fill: Theme.accentSoft, border: Theme.accent.opacity(0.4))
-    }
-}

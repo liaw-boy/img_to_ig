@@ -13,6 +13,8 @@ public actor UploadStager {
     private var keys: [String: String] = [:]                  // content digest -> object key
     private var inflight: [String: Task<String, Error>] = [:]
     private var states: [String: State] = [:]
+    /// Set by `discardAll`: a stager being thrown away never starts another upload.
+    private var closed = false
 
     /// - prepare: returns the exact bytes to upload (the verified original, or a shrunk copy when that is on).
     public init(storage: TempStorage, prepare: @escaping @Sendable (PublishItem) throws -> Data,
@@ -26,6 +28,7 @@ public actor UploadStager {
 
     /// Uploads one photo (idempotent: a photo already staged or being staged is not uploaded again).
     public func stage(_ item: PublishItem) async {
+        guard !closed else { return }
         let digest = item.digest
         if keys[digest] != nil { return }
         if let t = inflight[digest] { _ = try? await t.value; return }
@@ -69,7 +72,11 @@ public actor UploadStager {
         onChange(Array(keys.values))
     }
 
-    public func discardAll() async { await discard(Set(keys.keys).union(inflight.keys)) }
+    /// Deletes everything and closes the stager: later `stage` calls do nothing.
+    public func discardAll() async {
+        closed = true
+        await discard(Set(keys.keys).union(inflight.keys))
+    }
 
     /// Digests that are staged or being staged.
     public var staged: Set<String> { Set(keys.keys).union(inflight.keys) }

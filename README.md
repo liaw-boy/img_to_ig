@@ -134,7 +134,7 @@ Instagram → 設定 → 帳號類型 → 切換為**商業**或**創作者**帳
 <details>
 <summary><b>3. 儲存空間（以 Cloudflare R2 為例）</b></summary>
 
-1. 建立一個 **bucket**（私有，不要開公開存取），例如 `photo-temp`。
+1. 建立一個 **bucket**（私有，不要開公開存取），例如 `my-igpub-bucket`。
 2. 建立 **API 權杖**：權限選「物件讀取和寫入」，**只套用在這個 bucket**。
 3. 在 App 填：
    - **Cloudflare 帳戶 ID**：32 個英數字，只填這串，網址由 App 組成

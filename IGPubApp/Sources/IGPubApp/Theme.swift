@@ -96,6 +96,7 @@ enum Theme {
         static let label = SwiftUI.Font.system(size: 13, weight: .semibold)
         static let eyebrow = SwiftUI.Font.system(size: 13, weight: .semibold)
         static let caption = SwiftUI.Font.system(size: 12)
+        static let chipGlyph = SwiftUI.Font.system(size: 9, weight: .bold)
         static let mono = SwiftUI.Font.system(size: 13, design: .monospaced)
         static let monoStrong = SwiftUI.Font.system(size: 13, weight: .semibold, design: .monospaced)
         static let monoCaption = SwiftUI.Font.system(size: 12, weight: .semibold, design: .monospaced)
@@ -113,8 +114,13 @@ enum Theme {
     static let contentMaxWidth: CGFloat = 720
     static let sidebarWidth: CGFloat = 240
     static let sidebarRowHeight: CGFloat = 56
-    static let logoRowHeight: CGFloat = 40
+    static let logoSize: CGFloat = 52
+    static let logoRowHeight: CGFloat = 52
     static let footerHeight: CGFloat = 64
+    static let sheetWidth: CGFloat = 520
+    static let chipHeight: CGFloat = 28
+    static let chipFieldMinWidth: CGFloat = 160
+    static let sheetScrollMaxHeight: CGFloat = 220
     static let controlHeight: CGFloat = 44
     static let controlHeightSmall: CGFloat = 36
     static let controlRadius: CGFloat = 8
@@ -442,42 +448,21 @@ struct CornerMarks: Shape {
     }
 }
 
-struct BottomRightMark: Shape {
-    var length: CGFloat = 10
-    func path(in r: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: r.maxX - length, y: r.maxY)); p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
-        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - length))
-        return p
-    }
-}
-
-/// Darkroom logo: crop-mark frame with "IGP"; the bottom-right mark in accent.
-struct CropMarkLogo: View {
-    var body: some View {
-        ZStack {
-            CornerMarks(length: 10, skipBottomRight: true).stroke(Theme.ink, lineWidth: 2)
-            BottomRightMark(length: 10).stroke(Theme.accent, lineWidth: 2)
-            Text("IGP").font(Theme.Font.monoCaption).foregroundStyle(Theme.ink)
-        }
-        .frame(width: 40, height: 30)
-    }
-}
-
-/// Logo in a fixed 40×40 slot in both styles.
+/// The app icon itself (the one in the Dock and Finder), in a fixed Theme.logoSize slot in both styles.
+/// Outside a packaged .app (e.g. `swift run`) there is no icon file, so a plain tile stands in.
 struct AppLogo: View {
-    @Environment(\.iconStyle) private var style
+    private static let icon: NSImage? =
+        Bundle.main.bundleURL.pathExtension == "app" ? NSImage(named: NSImage.applicationIconName) : nil
     var body: some View {
         Group {
-            if style == .darkroom {
-                CropMarkLogo()
+            if let icon = Self.icon {
+                Image(nsImage: icon).resizable().interpolation(.high)
             } else {
                 RoundedRectangle(cornerRadius: Theme.controlRadius).fill(Theme.ink)
-                    .frame(width: 32, height: 32)
-                    .overlay(Image(systemName: "camera").font(Theme.Font.bodyStrong).foregroundStyle(Theme.canvas))
+                    .frame(width: Theme.logoSize * 0.8, height: Theme.logoSize * 0.8)   // the icon grid's 824/1024 body
             }
         }
-        .frame(width: 40, height: 40)
+        .frame(width: Theme.logoSize, height: Theme.logoSize)
         .accessibilityElement()
         .accessibilityLabel("img_to_ig")
     }

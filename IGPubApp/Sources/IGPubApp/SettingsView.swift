@@ -306,12 +306,20 @@ private struct PrivacyTab: View {
         return f
     }()
 
+    private var posts: [PostRecord] { PostRecord.group(model.history) }
+
+    private static func postTitle(_ p: PostRecord) -> String {
+        if p.photoCount > 1 { return "多張貼文 · \(p.photoCount) 張" }
+        if p.isCarousel { return "多張貼文" }       // its other photos were posted again later, so the count is unknown
+        return p.names.first ?? "（未記錄檔名）"
+    }
+
     private var updateStatus: String {
         switch model.updateState {
         case .idle: return ""
         case .checking: return "檢查中…"
         case .upToDate: return "目前已是最新版"
-        case .available(let r): return "有新版 \(r.version)，到發佈畫面按「立即更新」"
+        case .available(let r): return "有新版 \(r.version)"
         case .downloading, .installing: return "更新中…"
         case .failed(let m, _): return m
         }
@@ -323,8 +331,12 @@ private struct PrivacyTab: View {
                 SectionTitle(text: "版本與更新", trailing: "目前版本 \(model.currentVersion)")
                 Toggle("啟動時自動檢查更新", isOn: $model.autoCheckUpdates).toggleStyle(.checkbox).font(Theme.Font.callout)
                 HStack(spacing: Theme.Space.m) {
-                    Button("立即檢查") { Task { await model.checkForUpdates(manual: true) } }.buttonStyle(.igPlainSmall)
+                    Button("立即檢查") { Task { await model.checkForUpdates(manual: true, showSheet: false) } }.buttonStyle(.igPlainSmall)
                     Text(verbatim: updateStatus).font(Theme.Font.caption).foregroundStyle(Theme.ink3).lineLimit(2)
+                    if let p = UpdatePresentation(model.updateState, current: model.currentVersion), p.action != nil {
+                        Button(p.actionLabel) { Task { await model.installUpdate() } }
+                            .buttonStyle(.igPlainSmall).disabled(model.busy)
+                    }
                 }
                 Text("檢查更新只會向 GitHub 查詢最新版本號，不會送出照片、帳號或 token。更新檔必須是同一個簽章身分簽的才會安裝。")
                     .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
@@ -339,16 +351,16 @@ private struct PrivacyTab: View {
             }
             .padding(Theme.Space.l)
             Rectangle().fill(Theme.lineSoft).frame(height: 1)
-            SectionTitle(text: "發佈歷史", trailing: "共 \(model.history.count) 筆 · 只存在這台 Mac")
+            SectionTitle(text: "發佈歷史", trailing: "共 \(posts.count) 則貼文 · 只存在這台 Mac")
                 .padding(Theme.Space.l)
             Rectangle().fill(Theme.lineSoft).frame(height: 1)
-            if model.history.isEmpty {
+            if posts.isEmpty {
                 Text("還沒有發佈紀錄。").font(Theme.Font.callout).foregroundStyle(Theme.ink3).padding(Theme.Space.l)
             }
-            ForEach(Array(model.history.prefix(200).enumerated()), id: \.element.id) { i, e in
+            ForEach(Array(posts.prefix(200).enumerated()), id: \.element.id) { i, e in
                 if i > 0 { Rectangle().fill(Theme.lineSoft).frame(height: 1) }
                 HStack(spacing: Theme.Space.m) {
-                    Text(e.name == "carousel" ? "多張貼文中的一張" : (e.name.isEmpty ? "（未記錄檔名）" : e.name))
+                    Text(Self.postTitle(e))
                         .font(Theme.Font.callout).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: Theme.Space.m)
                     Text(e.at.map { Self.dateFormat.string(from: $0) } ?? "日期未知").font(Theme.Font.caption)
@@ -359,8 +371,8 @@ private struct PrivacyTab: View {
                 .padding(.horizontal, Theme.Space.l)
                 .frame(height: Theme.controlHeight)
             }
-            if model.history.count > 200 {
-                Text("只顯示最近 200 筆。").font(Theme.Font.caption).foregroundStyle(Theme.ink3).padding(Theme.Space.l)
+            if posts.count > 200 {
+                Text("只顯示最近 200 則。").font(Theme.Font.caption).foregroundStyle(Theme.ink3).padding(Theme.Space.l)
             }
         }
         .background(Theme.surface)

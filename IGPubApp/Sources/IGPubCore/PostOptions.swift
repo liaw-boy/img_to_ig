@@ -74,12 +74,14 @@ public struct PostExtras: Equatable {
 }
 
 public enum Usernames {
-    /// Instagram usernames: letters, digits, periods, underscores, up to 30. Accepts a leading "@".
+    /// Instagram usernames: letters, digits, periods, underscores, up to 30; no period at either end and never
+    /// two in a row. Accepts a leading "@".
     public static func normalize(_ raw: String) -> String? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.hasPrefix("@") { s.removeFirst() }
         guard (1...30).contains(s.count),
-              s.unicodeScalars.allSatisfy({ $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "." || $0 == "_") })
+              s.unicodeScalars.allSatisfy({ $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "." || $0 == "_") }),
+              !s.hasPrefix("."), !s.hasSuffix("."), !s.contains("..")
         else { return nil }
         return s
     }
@@ -93,5 +95,47 @@ public enum Usernames {
             out.append(n)
         }
         return out
+    }
+}
+
+/// Accounts used as collaborators in posts that went out, most used first. Local only (editor suggestions).
+public struct FrequentUsernames: Codable, Equatable {
+    public struct Entry: Codable, Equatable {
+        public var name: String
+        public var count: Int
+        public var last: Date
+    }
+    public private(set) var entries: [Entry] = []
+    public static let cap = 50
+    static let maxCount = 1_000_000      // a count beyond this only comes from a tampered store
+
+    public init() {}
+
+    /// Drops anything that is not a valid username (the stored copy is outside input).
+    public func sanitized() -> FrequentUsernames {
+        var f = FrequentUsernames()
+        f.entries = Array(entries.filter { Usernames.normalize($0.name) == $0.name && (1...Self.maxCount).contains($0.count) }.prefix(Self.cap))
+        return f
+    }
+
+    public mutating func record(_ names: [String], at now: Date = Date()) {
+        for raw in names {
+            guard let n = Usernames.normalize(raw) else { continue }
+            if let i = entries.firstIndex(where: { $0.name.lowercased() == n.lowercased() }) {
+                if entries[i].count < Self.maxCount { entries[i].count += 1 }; entries[i].last = now; entries[i].name = n
+            } else {
+                entries.append(Entry(name: n, count: 1, last: now))
+            }
+        }
+        entries.sort { ($0.count, $0.last) > ($1.count, $1.last) }
+        if entries.count > Self.cap { entries.removeLast(entries.count - Self.cap) }
+    }
+
+    /// Most used first, starting with what has been typed so far, without the accounts already added.
+    public func suggestions(matching typed: String, excluding: [String], limit: Int = 8) -> [String] {
+        var p = typed.trimmingCharacters(in: .whitespaces).lowercased()
+        if p.hasPrefix("@") { p.removeFirst() }
+        let ex = Set(excluding.map { $0.lowercased() })
+        return Array(entries.map(\.name).filter { !ex.contains($0.lowercased()) && (p.isEmpty || $0.lowercased().hasPrefix(p)) }.prefix(limit))
     }
 }

@@ -102,7 +102,48 @@ final class FilesTests: XCTestCase {
     }
 }
 
+final class FrequentUsernamesTests: XCTestCase {
+    func testMostUsedFirstAndFilteredByPrefix() {
+        var f = FrequentUsernames()
+        let t = Date(timeIntervalSince1970: 1_000)
+        f.record(["@cara_01", "amy"], at: t)
+        f.record(["Cara_01", "bob", "bad name!"], at: t.addingTimeInterval(10))
+        XCTAssertEqual(f.entries.map(\.name), ["Cara_01", "bob", "amy"])      // count, then most recent; invalid dropped
+        XCTAssertEqual(f.suggestions(matching: "", excluding: []), ["Cara_01", "bob", "amy"])
+        XCTAssertEqual(f.suggestions(matching: "@C", excluding: []), ["Cara_01"])
+        XCTAssertEqual(f.suggestions(matching: "", excluding: ["cara_01"]), ["bob", "amy"])
+    }
+
+    func testStoredCopyIsSanitized() throws {
+        let json = #"{"entries":[{"name":"ok.name","count":2,"last":0},{"name":"../x","count":9,"last":0},{"name":"zero","count":0,"last":0}]}"#
+        let f = try JSONDecoder().decode(FrequentUsernames.self, from: Data(json.utf8)).sanitized()
+        XCTAssertEqual(f.entries.map(\.name), ["ok.name"])
+    }
+
+    func testHugeStoredCountIsDroppedAndNeverOverflows() throws {
+        let json = #"{"entries":[{"name":"amy","count":9223372036854775807,"last":0}]}"#
+        var raw = try JSONDecoder().decode(FrequentUsernames.self, from: Data(json.utf8))
+        XCTAssertEqual(raw.sanitized().entries, [])
+        raw.record(["amy"])                                   // even unsanitized: no trap
+        XCTAssertEqual(raw.entries.first?.count, Int.max)
+    }
+}
+
 final class LedgerTests: XCTestCase {
+    func testHistoryIsGroupedByPost() {
+        let t0 = Date(timeIntervalSince1970: 1_000), t1 = Date(timeIntervalSince1970: 2_000)
+        let rows = [LedgerEntry(id: "a", mediaId: "C1", name: "carousel", at: t1),
+                    LedgerEntry(id: "b", mediaId: "C1", name: "carousel", at: t1),
+                    LedgerEntry(id: "c", mediaId: "C1", name: "carousel", at: t1),
+                    LedgerEntry(id: "d", mediaId: "S1", name: "x.jpg", at: t0),
+                    LedgerEntry(id: "e", mediaId: "C0", name: "carousel", at: Date(timeIntervalSince1970: 500))]
+        let posts = PostRecord.group(rows)
+        XCTAssertEqual(posts.map(\.mediaId), ["C1", "S1", "C0"])          // newest first
+        XCTAssertEqual(posts.map(\.photoCount), [3, 1, 1])
+        XCTAssertEqual(posts.map(\.isCarousel), [true, false, true])     // C0 lost its other rows but is still a carousel
+        XCTAssertEqual(posts[0].names, []); XCTAssertEqual(posts[1].names, ["x.jpg"])
+    }
+
     func testPersistsAndReloads() throws {
         let u = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "/p.json")
         let l = Ledger(url: u)
@@ -708,6 +749,8 @@ final class TransportGuardTests: XCTestCase {
         XCTAssertEqual(Usernames.normalize(" @some.user_1 "), "some.user_1")
         XCTAssertNil(Usernames.normalize("a b")); XCTAssertNil(Usernames.normalize("")); XCTAssertNil(Usernames.normalize("名字"))
         XCTAssertNil(Usernames.normalize(String(repeating: "a", count: 31)))
+        for bad in [".wei", "wei.", "we..i", "@.wei"] { XCTAssertNil(Usernames.normalize(bad), bad) }
+        XCTAssertEqual(Usernames.normalize("w.e.i_"), "w.e.i_")
         XCTAssertEqual(Usernames.parseList("a, @b，c d"), ["a", "b", "c", "d"])
         XCTAssertNil(Usernames.parseList("a, b/c"))
     }
@@ -722,6 +765,12 @@ final class UpdaterTests: XCTestCase {
             "browser_download_url": url ?? "https://github.com/liaw-boy/img_to_ig/releases/download/\(tag)/img_to_ig-\(v).zip"]
         asset["digest"] = digest ?? "sha256:" + String(repeating: "ab", count: 32)
         return ["tag_name": tag, "draft": draft, "prerelease": prerelease, "html_url": page, "body": "notes", "assets": [asset]]
+    }
+
+    func testReleaseNotesBecomeCleanPlainText() {
+        let md = "## 新增\r\n\r\n**新增**\n- **三個步驟**：選擇 → 發佈\n* 用 `ditto` 解壓\n\n\n- [連結](https://evil.example)\n\n"
+        XCTAssertEqual(ReleaseNotes.plainText(md),
+                       "新增\n\n新增\n• 三個步驟：選擇 → 發佈\n• 用 ditto 解壓\n\n• [連結](https://evil.example)")
     }
 
     private func parse(_ o: [String: Any], current: String = "0.1.0") throws -> ReleaseInfo? {
@@ -1116,6 +1165,18 @@ final class StagingTests: XCTestCase {
         XCTAssertEqual(c.deletes, 1)
         let left = await stager.staged; XCTAssertEqual(left, [b.digest])
         await stager.discardAll(); XCTAssertEqual(c.deletes, 2)
+    }
+
+    func testDiscardAllClosesTheStager() async throws {
+        let c = Counter()
+        let http = FakeHTTP { method, _, _ in c.bump(method); return (200, Data()) }
+        let storage = TempStorage(config: cfg(), accessKey: "AK", secretKey: "SK", http: http)
+        let stager = UploadStager(storage: storage, prepare: { try Publisher.prepareBytes($0, maxBytes: 8 << 20, shrinkOversize: false) })
+        await stager.stage(try photo(7))
+        await stager.discardAll()
+        await stager.stage(try photo(8))             // e.g. queued before the app started updating
+        XCTAssertEqual(c.puts, 1); XCTAssertEqual(c.deletes, 1)
+        let left = await stager.staged; XCTAssertTrue(left.isEmpty)
     }
 
     func testFailedUploadIsReportedAndNotKept() async throws {

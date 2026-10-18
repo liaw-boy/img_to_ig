@@ -24,7 +24,26 @@ public enum Version {
     public static func normalized(_ s: String) -> String? { parse(s).map { $0.map(String.init).joined(separator: ".") } }
 }
 
-public struct ReleaseInfo: Equatable {
+/// Release notes are written in Markdown on GitHub but shown as plain text (links must never become clickable).
+/// This only strips the markup so the text reads cleanly; it never interprets it.
+public enum ReleaseNotes {
+    public static func plainText(_ md: String) -> String {
+        var out: [String] = []
+        for raw in md.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false) {
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            while line.hasPrefix("#") { line.removeFirst() }
+            line = line.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") { line = "• " + line.dropFirst(2) }
+            for mark in ["**", "__", "`"] { line = line.replacingOccurrences(of: mark, with: "") }
+            if line.isEmpty, out.last?.isEmpty ?? true { continue }       // no leading or doubled blank lines
+            out.append(line)
+        }
+        while out.last?.isEmpty == true { out.removeLast() }
+        return out.joined(separator: "\n")
+    }
+}
+
+public struct ReleaseInfo: Equatable, Sendable {
     public let version: String
     public let notes: String
     public let pageURL: URL

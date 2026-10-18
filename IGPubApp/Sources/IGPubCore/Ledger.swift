@@ -13,6 +13,30 @@ public struct LedgerEntry: Identifiable, Equatable {
     }
 }
 
+/// One Instagram post: a single photo, or every photo of a carousel (its rows share the media id).
+/// Display only; the ledger itself stays one row per file, as the CLI expects.
+public struct PostRecord: Identifiable, Equatable {
+    public let mediaId: String
+    public let photoCount: Int
+    /// Recorded file names (carousel rows are stored as "carousel" and carry none).
+    public let names: [String]
+    public let at: Date?
+    /// A carousel, even when only some of its rows are left: the ledger is keyed by photo, so a photo posted
+    /// again later moves its row to the newer post.
+    public let isCarousel: Bool
+    public var id: String { mediaId }
+
+    /// Newest post first.
+    public static func group(_ entries: [LedgerEntry]) -> [PostRecord] {
+        Dictionary(grouping: entries, by: \.mediaId).map { media, rows in
+            PostRecord(mediaId: media, photoCount: rows.count,
+                       names: rows.map(\.name).filter { !$0.isEmpty && $0 != "carousel" }.sorted(),
+                       at: rows.compactMap(\.at).max(),
+                       isCarousel: rows.count > 1 || rows.contains { $0.name == "carousel" })
+        }.sorted { ($0.at ?? .distantPast, $0.mediaId) > ($1.at ?? .distantPast, $1.mediaId) }
+    }
+}
+
 /// Ledger of what has been published, by file hash. Same file and format as the Python CLI
 /// (~/.img_to_ig/published.json) so both tools skip what the other already posted.
 public final class Ledger: @unchecked Sendable {

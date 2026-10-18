@@ -49,7 +49,7 @@ struct KeychainNoticeSheet: View {
             }
         }
         .padding(Theme.Space.xxl)
-        .frame(width: 520)
+        .frame(width: Theme.sheetWidth)
         .background(Theme.surface)
     }
 }
