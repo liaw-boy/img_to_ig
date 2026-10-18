@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/icon.png" width="128" height="128" alt="img_to_ig 圖示">
+
 # img_to_ig
 
 **用 Instagram 官方 API 發佈照片到你自己的專業帳號**
@@ -46,7 +48,7 @@
 
 ## 快速開始
 
-1. **下載安裝**：到 [Releases](https://github.com/liaw-boy/img_to_ig/releases/latest) 下載 zip，解壓縮，把 `img_to_ig.app` 拖進「應用程式」。
+1. **下載安裝**：到 [Releases](https://github.com/liaw-boy/img_to_ig/releases/latest) 下載 dmg，打開後把 `img_to_ig.app` 拖進「應用程式」。
    第一次要右鍵 → 打開（[為什麼](#下載與安裝mac-app)）。
 2. **完成設定精靈**：建立 Meta App、授權你的 Instagram、設定儲存空間。（[事前準備](#事前準備帳號meta-app儲存空間)）
 3. **發佈**：拖入照片 → 選取 → **預覽並發佈**。
@@ -72,7 +74,8 @@ flowchart LR
 
 需求：**macOS 14 以上**。
 
-1. 到 [Releases](https://github.com/liaw-boy/img_to_ig/releases/latest) 下載 `img_to_ig-版本號.zip`，解壓縮，拖進「應用程式」。
+1. 到 [Releases](https://github.com/liaw-boy/img_to_ig/releases/latest) 下載 `img_to_ig-版本號.dmg`，打開後把 `img_to_ig.app` 拖到旁邊的「應用程式」，再退出磁碟。
+   （也可以下載 `.zip`，解壓縮後拖進「應用程式」，裡面是同一個 App。）**請不要直接在 dmg 或「下載」資料夾裡執行**，否則自動更新會無法替換 App。
 2. **第一次打開會被 macOS 擋下**，因為這個 App 沒有 Apple 公證（公證需要付費的開發者計畫）。
    在 App 上按**右鍵 → 打開 → 再按「打開」**。較新的 macOS 若仍擋下，到「系統設定 → 隱私權與安全性」，最下方按「仍要打開」。
 3. 之後的更新可以在 App 內完成：選單「img_to_ig → 檢查更新…」。

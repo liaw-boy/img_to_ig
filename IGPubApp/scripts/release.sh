@@ -1,5 +1,5 @@
 #!/bin/sh
-# Packages a release: dist/img_to_ig-<VERSION>.zip + .sha256. It does NOT upload anything.
+# Packages a release: dist/img_to_ig-<VERSION>.zip and .dmg (+ .sha256 each). It does NOT upload anything.
 # Needs the "img_to_ig Release Signing" certificate: in-app updates only install builds signed by the same identity.
 set -eu
 cd "$(dirname "$0")/.."
@@ -28,11 +28,13 @@ fi
 echo "ok: package has no personal data"
 
 shasum -a 256 "$ZIP" | tee "$ZIP.sha256"
+./scripts/make_dmg.sh "$ZIP"           # first-install image with the same app; updates keep using the zip
+DMG="${ZIP%.zip}.dmg"
 cat <<MSG
 
 Packaged $ZIP
 To publish (this is public and cannot be fully undone; do it deliberately):
   git tag v$VERSION && git push origin v$VERSION
-  gh release create v$VERSION "$ZIP" --repo liaw-boy/img_to_ig --title "img_to_ig $VERSION" --notes "<what changed>"
+  gh release create v$VERSION "$ZIP" "$DMG" --repo liaw-boy/img_to_ig --title "img_to_ig $VERSION" --notes "<what changed>"
 The release must be public for the app to see it. Never commit dist/ or the signing key.
 MSG
