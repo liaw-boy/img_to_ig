@@ -112,6 +112,9 @@ enum Theme {
     static let navIconSize: CGFloat = 18
     static let paragraphMaxWidth: CGFloat = 560
     static let contentMaxWidth: CGFloat = 720
+    static let previewWidth: CGFloat = 360          // one post preview in a grid of several
+    static let previewMaxWidth: CGFloat = 760       // a lone preview grows with the window up to this
+    static let previewChrome: CGFloat = 190         // a lone post's height besides the photo (rows, caption); the label and note may scroll
     static let sidebarWidth: CGFloat = 240
     static let sidebarRowHeight: CGFloat = 56
     static let logoSize: CGFloat = 52

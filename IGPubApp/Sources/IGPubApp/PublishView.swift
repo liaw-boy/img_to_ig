@@ -409,36 +409,64 @@ private struct StaticPreview: View {
     let caption: String
     let collaborators: [String]
     let ai: Bool
+    var width = Theme.previewWidth
     @State private var index = 0
     var body: some View {
         PostPreview(items: ids.compactMap { id in model.items.first { $0.id == id } }, caption: caption,
-                    collaborators: collaborators, aiGenerated: ai, username: model.config?.username, width: 360, index: $index)
+                    collaborators: collaborators, aiGenerated: ai, username: model.config?.username, width: width, index: $index)
     }
 }
 
 /// Step 3: the final look of everything that will go out, and the progress once it does.
 private struct SendContent: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.pageViewport) private var viewport
+
+    /// A single post (carousel or one photo) fills the free space: as wide as fits, and short enough that the post card
+    /// itself fits the visible height when the window allows. Several posts keep the grid size.
+    private func loneWidth(firstAspect: Double?) -> CGFloat {
+        guard viewport.width > 0 else { return Theme.previewWidth }
+        let ratio = FeedCrop.ratio(for: firstAspect ?? 1)
+        let fit = min(viewport.width - 2 * Theme.Space.xxl, (viewport.height - Theme.previewChrome) * ratio, Theme.previewMaxWidth)
+        return max(Theme.previewWidth, fit.rounded(.down))
+    }
+
     var body: some View {
         if !model.progress.isEmpty { ProgressPanel() }
         if let e = model.errorText { ErrorBanner(text: e, error: model.lastError) }
         let picked = model.chosen
         if !picked.isEmpty {
-            Text("發佈後會長這樣").font(Theme.Font.label).foregroundStyle(Theme.ink)
-            if model.mode == .carousel {
-                StaticPreview(ids: picked.map(\.id), caption: model.carouselCaption.trimmingCharacters(in: .whitespacesAndNewlines),
-                              collaborators: Usernames.parseList(model.carouselCollaboratorsText) ?? [], ai: model.carouselAI)
-            } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 360), spacing: Theme.Space.xl, alignment: .top)],
-                          alignment: .leading, spacing: Theme.Space.xl) {
-                    ForEach(picked) { p in
-                        StaticPreview(ids: [p.id], caption: p.caption.trimmingCharacters(in: .whitespacesAndNewlines),
-                                      collaborators: p.extras?.collaborators ?? [], ai: p.aiGenerated)
+            // Centered in the page, and a lone preview sized to the window.
+            VStack(spacing: Theme.Space.xl) {
+                Text("發佈後會長這樣").font(Theme.Font.label).foregroundStyle(Theme.ink)
+                if model.mode == .carousel {
+                    StaticPreview(ids: picked.map(\.id), caption: model.carouselCaption.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  collaborators: Usernames.parseList(model.carouselCollaboratorsText) ?? [], ai: model.carouselAI,
+                                  width: loneWidth(firstAspect: picked.first?.aspect))
+                } else if picked.count == 1, let p = picked.first {
+                    StaticPreview(ids: [p.id], caption: p.caption.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  collaborators: p.extras?.collaborators ?? [], ai: p.aiGenerated, width: loneWidth(firstAspect: p.aspect))
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: Theme.previewWidth), spacing: Theme.Space.xl, alignment: .top)],
+                              alignment: .center, spacing: Theme.Space.xl) {
+                        ForEach(picked) { p in
+                            StaticPreview(ids: [p.id], caption: p.caption.trimmingCharacters(in: .whitespacesAndNewlines),
+                                          collaborators: p.extras?.collaborators ?? [], ai: p.aiGenerated)
+                        }
                     }
                 }
+                Text("在主頁格狀會長這樣").font(Theme.Font.label).foregroundStyle(Theme.ink)
+                    .padding(.top, Theme.Space.l)
+                ProfileGridPreview(posts: (model.mode == .carousel ? Array(picked.prefix(1)) : picked).map {
+                    .init(id: $0.id, url: $0.url, thumbnail: $0.thumbnail, isCarousel: model.mode == .carousel)
+                })
+                Text("主頁縮圖取照片正中間的 3:4，發佈時無法指定；要換位置，發佈後在 Instagram App 的「調整預覽」修改。")
+                    .font(Theme.Font.caption).foregroundStyle(Theme.ink3).multilineTextAlignment(.center)
+                    .frame(maxWidth: Theme.previewWidth)
+                Text("預覽依 Instagram 的版型與裁切規則模擬，實際畫面以 Instagram 為準。")
+                    .font(Theme.Font.caption).foregroundStyle(Theme.ink3).multilineTextAlignment(.center)
             }
-            Text("預覽依 Instagram 的版型與裁切規則模擬，實際畫面以 Instagram 為準。")
-                .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
+            .frame(maxWidth: .infinity)
         }
     }
 }

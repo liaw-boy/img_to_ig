@@ -38,6 +38,15 @@ private struct LogoRow: View {
     }
 }
 
+/// The visible size of the page's scrolling area, for content that should fill the window (the step 3 preview).
+private struct PageViewportKey: EnvironmentKey { static let defaultValue: CGSize = .zero }
+extension EnvironmentValues {
+    var pageViewport: CGSize {
+        get { self[PageViewportKey.self] }
+        set { self[PageViewportKey.self] = newValue }
+    }
+}
+
 /// Header (fixed) + scrolling content column + pinned footer bar.
 struct PageScaffold<Content: View, Footer: View>: View {
     let eyebrow: String
@@ -56,20 +65,23 @@ struct PageScaffold<Content: View, Footer: View>: View {
                     .padding(.top, 6)
                     .accessibilityAddTraits(.isHeader)
                 Text(subtitle).font(Theme.Font.body).lineSpacing(Theme.bodyLineSpacing).foregroundStyle(Theme.ink2)
-                    .lineLimit(2, reservesSpace: true)
-                    .frame(maxWidth: Theme.paragraphMaxWidth, alignment: .leading)
+                    .lineLimit(2, reservesSpace: true)       // one line on a wide window; the reserved second line keeps pages aligned
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, Theme.Space.s)
             }
             .padding(.horizontal, Theme.Space.xxl)
             .padding(.top, 28)
             .padding(.bottom, Theme.Space.xl)
             .frame(maxWidth: .infinity, alignment: .leading)
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.Space.xl) { content }
-                    .padding(.horizontal, Theme.Space.xxl)
-                    .padding(.bottom, Theme.Space.xxl)
-                    .frame(maxWidth: wide ? .infinity : Theme.contentMaxWidth + 2 * Theme.Space.xxl, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            GeometryReader { g in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Theme.Space.xl) { content }
+                        .padding(.horizontal, Theme.Space.xxl)
+                        .padding(.bottom, Theme.Space.xxl)
+                        .frame(maxWidth: wide ? .infinity : Theme.contentMaxWidth + 2 * Theme.Space.xxl, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .environment(\.pageViewport, g.size)
             }
             FooterBar { footer }
         }
