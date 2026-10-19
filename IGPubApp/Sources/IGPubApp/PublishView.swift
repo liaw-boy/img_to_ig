@@ -15,15 +15,23 @@ struct PublishView: View {
         } main: {
             switch model.flow {
             case .select:
-                PageScaffold(eyebrow: "步驟 1／3", title: "選擇圖片",
+                PageScaffold(eyebrow: "步驟 1／4", title: "選擇圖片",
                              subtitle: "把 JPEG 照片或資料夾拖進來，勾選要發的照片。同名的 .txt 會自動當作文案。",
                              wide: true) {
                     content
                 } footer: {
                     selectFooter
                 }
+            case .order:
+                PageScaffold(eyebrow: "步驟 2／4", title: "排列順序",
+                             subtitle: "拖曳照片調整順序。多張貼文照這個順序翻頁、第 1 張是封面；單張貼文照這個順序一則一則發。",
+                             wide: true) {
+                    OrderContent()
+                } footer: {
+                    orderFooter
+                }
             case .edit:
-                PageScaffold(eyebrow: "步驟 2／3", title: "編輯內容",
+                PageScaffold(eyebrow: "步驟 3／4", title: "編輯內容",
                              subtitle: "補文案、替代文字、標記人，左邊即時顯示發佈後的樣子。照片在這一步就會先暫存上傳，之後按發佈就不用再等上傳。",
                              wide: true) {
                     EditContent()
@@ -31,7 +39,7 @@ struct PublishView: View {
                     editFooter
                 }
             case .send:
-                PageScaffold(eyebrow: "步驟 3／3", title: "發佈",
+                PageScaffold(eyebrow: "步驟 4／4", title: "發佈",
                              subtitle: "最後確認。這是發佈後在 Instagram 的樣子；貼文發佈後立刻公開，這個 App 無法撤回。",
                              wide: true) {
                     SendContent()
@@ -66,6 +74,8 @@ struct PublishView: View {
             ModePicker(mode: $model.mode)
             Spacer()
             Button(style == .darkroom ? "＋ 加入照片…" : "加入照片…") { importing = true }.buttonStyle(.igPlainSmall)
+            Button("取消全選") { model.unpickAll() }.buttonStyle(.igText)
+                .disabled(model.busy || model.picks.isEmpty)
             Button("清空") { model.clearItems() }.buttonStyle(.igText)
                 .disabled(model.busy || model.items.isEmpty)
         }
@@ -81,12 +91,12 @@ struct PublishView: View {
             }
         }
         if !model.items.isEmpty {
-            Text("點縮圖選取或取消；按住 Shift 再點另一張，可連選中間所有照片。拖曳縮圖或按右鍵可以調整順序，多張貼文就是依這個順序排。")
+            Text("點縮圖選取或取消；按住 Shift 再點另一張，可連選中間所有照片。縮圖上的數字是點選的順序，也就是發佈順序；取消後再點一次會排到最後。")
                 .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 168, maximum: 240), spacing: Theme.Space.l, alignment: .top)],
                       alignment: .leading, spacing: Theme.Space.l) {
                 ForEach($model.items) { $item in
-                    PhotoTile(item: $item, order: model.chosen.firstIndex { $0.id == item.id }.map { $0 + 1 })
+                    PhotoTile(item: $item, order: model.picks.position(of: item.id))
                 }
             }
         }
@@ -119,10 +129,21 @@ struct PublishView: View {
     @ViewBuilder private var selectFooter: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
             Text(postsSummary).font(Theme.Font.label).foregroundStyle(Theme.ink)
-            Text(model.chosen.isEmpty ? "先勾選至少一張照片。" : "下一步：編輯文案與設定。")
+            Text(model.chosen.isEmpty ? "先勾選至少一張照片。" : "下一步：確認發佈順序。")
                 .font(Theme.Font.caption).foregroundStyle(Theme.ink3).lineLimit(1)
         }
         Spacer()
+        Button(style == .darkroom ? "下一步：排列順序 →" : "下一步：排列順序") { model.go(.order) }
+            .buttonStyle(.igPrimary).disabled(!model.canGo(.order))
+    }
+
+    @ViewBuilder private var orderFooter: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.xs) {
+            Text(postsSummary).font(Theme.Font.label).foregroundStyle(Theme.ink)
+            Text("順序沒問題，就到下一步編輯內容。").font(Theme.Font.caption).foregroundStyle(Theme.ink3).lineLimit(1)
+        }
+        Spacer()
+        Button("返回選擇圖片") { model.go(.select) }.buttonStyle(.igPlain)
         Button(style == .darkroom ? "下一步：編輯內容 →" : "下一步：編輯內容") { model.go(.edit) }
             .buttonStyle(.igPrimary).disabled(!model.canGo(.edit))
     }
@@ -134,7 +155,7 @@ struct PublishView: View {
                 .font(Theme.Font.caption).foregroundStyle(model.publishProblem == nil ? Theme.ink3 : Theme.danger).lineLimit(1)
         }
         Spacer()
-        Button("返回選擇圖片") { model.go(.select) }.buttonStyle(.igPlain)
+        Button("返回排列順序") { model.go(.order) }.buttonStyle(.igPlain)
         Button(style == .darkroom ? "下一步：發佈 →" : "下一步：發佈") { model.go(.send) }
             .buttonStyle(.igPrimary).disabled(!model.canGo(.send))
     }
@@ -148,7 +169,7 @@ struct PublishView: View {
         }
         Spacer()
         if finished {
-            Button("回到選擇圖片") { model.clearProgress(); model.go(.select) }.buttonStyle(.igPrimary)
+            Button("回到選擇圖片") { model.go(.select) }.buttonStyle(.igPrimary)
         } else {
             Button("返回編輯內容") { model.go(.edit) }.buttonStyle(.igPlain).disabled(model.busy)
             Button(style == .darkroom ? "發佈 →" : "發佈…") { confirming = true }
@@ -248,12 +269,12 @@ struct CaptionEditor: View {
 private struct PhotoTile: View {
     @EnvironmentObject var model: AppModel
     @Binding var item: PhotoItem
-    let order: Int?        // position among the checked photos
+    let order: Int?        // place in the post (pick order), nil when not picked
     @Environment(\.iconStyle) private var style
-    @State private var dropTargeted = false
 
     var body: some View {
         let name = item.url.lastPathComponent
+        let picked = order != nil
         VStack(alignment: .leading, spacing: Theme.Space.s) {
             ZStack(alignment: .topLeading) {
                 // A square that takes the tile's width; the photo only fills it (it must not size the tile).
@@ -263,8 +284,8 @@ private struct PhotoTile: View {
                         if let t = item.thumbnail { Image(nsImage: t).resizable().scaledToFill() } else { Theme.sidebar }
                     }
                     .clipped()
-                    .opacity(item.selected ? 1 : 0.45)
-                if let order, item.selected {
+                    .opacity(picked ? 1 : 0.45)
+                if let order {
                     Text(String(format: "%02d", order)).font(Theme.Font.monoStrong).foregroundStyle(.white)
                         .padding(.horizontal, Theme.Space.s).padding(.vertical, 2)
                         .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 6))
@@ -273,15 +294,8 @@ private struct PhotoTile: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: Theme.controlRadius))
-            .contentShape(Rectangle())
-            .onTapGesture { model.tapItem(item.id, extend: NSEvent.modifierFlags.contains(.shift)) }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(name)
-            .accessibilityValue(item.selected ? "已選取" : "未選取")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { item.selected.toggle() }
             VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(Theme.Font.label).foregroundStyle(item.selected ? Theme.ink : Theme.ink2)
+                Text(name).font(Theme.Font.label).foregroundStyle(picked ? Theme.ink : Theme.ink2)
                     .lineLimit(1).truncationMode(.middle)
                 HStack(spacing: Theme.Space.s) {
                     if item.bytes > 0 {
@@ -292,7 +306,7 @@ private struct PhotoTile: View {
                         Text(model.autoShrink ? "發佈時縮小" : "超過 8 MB，原檔上傳").font(Theme.Font.caption).foregroundStyle(Theme.warnText)
                     }
                     if item.alreadyPublished {
-                        Text(item.selected ? "已發過，仍會再發" : "已發過")
+                        Text(picked ? "已發過，仍會再發" : "已發過")
                             .font(Theme.Font.caption).foregroundStyle(Theme.warnText)
                     }
                 }
@@ -300,22 +314,17 @@ private struct PhotoTile: View {
             .padding(.horizontal, 2)
         }
         .padding(Theme.Space.s)
-        .background(item.selected ? Theme.surface : Theme.surfaceMuted, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .background(picked ? Theme.surface : Theme.surfaceMuted, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
         .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius)
-            .strokeBorder(dropTargeted ? Theme.ink : (item.selected ? Theme.accent : Theme.line),
-                          lineWidth: dropTargeted ? 3 : (item.selected ? 1.5 : 1)))
-        .draggable(item.id.uuidString)
-        .dropDestination(for: String.self) { ids, _ in
-            guard let s = ids.first, let dragged = UUID(uuidString: s), dragged != item.id else { return false }
-            model.moveItem(dragged, before: item.id)      // dropped on a photo: goes just before it
-            return true
-        } isTargeted: { dropTargeted = $0 }
-        .contextMenu {
-            Button("移到最前面") { model.moveItem(item.id, before: model.items.first?.id) }
-            Button("往前一格") { model.shiftItem(item.id, by: -1) }
-            Button("往後一格") { model.shiftItem(item.id, by: 1) }
-            Button("移到最後面") { model.moveItem(item.id, before: nil) }
-        }
+            .strokeBorder(picked ? Theme.accent : Theme.line, lineWidth: picked ? 1.5 : 1))
+        // The whole tile (photo, name and size) picks or unpicks.
+        .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .onTapGesture { model.tapItem(item.id, extend: NSEvent.modifierFlags.contains(.shift)) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name)
+        .accessibilityValue(picked ? "已選取" : "未選取")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { model.tapItem(item.id, extend: false) }
     }
 }
 
@@ -358,6 +367,7 @@ private struct StepRow: View {
     private var detail: String? {
         switch step {
         case .select: return model.chosen.isEmpty ? nil : "已選 \(model.chosen.count) 張"
+        case .order: return nil
         case .edit:
             guard model.flow != .select, !model.chosen.isEmpty else { return nil }
             return "已暫存 \(model.stagedReady) / \(model.chosen.count)"
@@ -366,7 +376,76 @@ private struct StepRow: View {
     }
 }
 
-/// Step 2: every post with its settings next to a live preview, and the progress of the background upload.
+/// Step 2: the picked photos in post order; drag a photo onto another to move it.
+private struct OrderContent: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let picked = model.chosen
+        Text(model.mode == .carousel
+             ? "目前是多張貼文：\(picked.count) 張合成一則。"
+             : "目前是單張貼文：會發 \(picked.count) 則，第 1 則最先發；Instagram 主頁上最後發的那則會排在最前面。")
+            .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 168, maximum: 240), spacing: Theme.Space.l, alignment: .top)],
+                  alignment: .leading, spacing: Theme.Space.l) {
+            ForEach(Array(picked.enumerated()), id: \.element.id) { i, p in
+                OrderTile(item: p, place: i + 1)
+            }
+        }
+    }
+}
+
+private struct OrderTile: View {
+    @EnvironmentObject var model: AppModel
+    let item: PhotoItem
+    let place: Int
+    @State private var dropTargeted = false
+
+    var body: some View {
+        let name = item.url.lastPathComponent
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .aspectRatio(1, contentMode: .fit)
+                    .overlay {
+                        if let t = item.thumbnail { Image(nsImage: t).resizable().scaledToFill() } else { Theme.sidebar }
+                    }
+                    .clipped()
+                Text(String(format: "%02d", place)).font(Theme.Font.monoStrong).foregroundStyle(.white)
+                    .padding(.horizontal, Theme.Space.s).padding(.vertical, 2)
+                    .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 6))
+                    .frame(maxWidth: .infinity, alignment: .topTrailing).padding(Theme.Space.s)
+                    .accessibilityHidden(true)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: Theme.controlRadius))
+            Text(name).font(Theme.Font.label).foregroundStyle(Theme.ink)
+                .lineLimit(1).truncationMode(.middle).padding(.horizontal, 2)
+        }
+        .padding(Theme.Space.s)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius)
+            .strokeBorder(dropTargeted ? Theme.ink : Theme.line, lineWidth: dropTargeted ? 3 : 1))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("第 \(place) 張：\(name)")
+        // Dragging is the only visible way; VoiceOver gets the same moves as actions.
+        .accessibilityAction(named: "往前移") { model.movePick(item.id, by: -1) }
+        .accessibilityAction(named: "往後移") { model.movePick(item.id, by: 1) }
+        .draggable(item.id.uuidString)
+        .dropDestination(for: String.self) { ids, _ in
+            guard let s = ids.first, let dragged = UUID(uuidString: s), dragged != item.id else { return false }
+            // Dropped on a later photo: it takes that place (goes after it); on an earlier one: goes before it.
+            let from = model.picks.position(of: dragged) ?? 0
+            if from < place {
+                let next = model.picks.ids.indices.contains(place) ? model.picks.ids[place] : nil
+                model.movePick(dragged, before: next)
+            } else {
+                model.movePick(dragged, before: item.id)
+            }
+            return true
+        } isTargeted: { dropTargeted = $0 }
+    }
+}
+
+/// Step 3: every post with its settings next to a live preview, and the progress of the background upload.
 private struct EditContent: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
@@ -417,57 +496,74 @@ private struct StaticPreview: View {
     }
 }
 
-/// Step 3: the final look of everything that will go out, and the progress once it does.
+/// Step 4: the final look of everything that will go out, and the progress once it does.
 private struct SendContent: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.pageViewport) private var viewport
 
-    /// A single post (carousel or one photo) fills the free space: as wide as fits, and short enough that the post card
-    /// itself fits the visible height when the window allows. Several posts keep the grid size.
+    /// A single post (carousel or one photo) fills the space left of the profile-grid column: as wide as fits, and
+    /// short enough that the post card itself fits the visible height when the window allows. Several posts keep the grid size.
     private func loneWidth(firstAspect: Double?) -> CGFloat {
         guard viewport.width > 0 else { return Theme.previewWidth }
         let ratio = FeedCrop.ratio(for: firstAspect ?? 1)
-        let fit = min(viewport.width - 2 * Theme.Space.xxl, (viewport.height - Theme.previewChrome) * ratio, Theme.previewMaxWidth)
+        let free = viewport.width - 2 * Theme.Space.xxl - Theme.previewGap - Theme.previewWidth
+        let fit = min(free, (viewport.height - Theme.previewChrome) * ratio, Theme.previewMaxWidth)
         return max(Theme.previewWidth, fit.rounded(.down))
     }
 
     var body: some View {
-        if !model.progress.isEmpty { ProgressPanel() }
+        // Before publishing: the preview. Once Publish is pressed: the progress instead, until it is closed.
+        let publishing = !model.progress.isEmpty
+        if publishing { ProgressPanel() }
         if let e = model.errorText { ErrorBanner(text: e, error: model.lastError) }
         let picked = model.chosen
-        if !picked.isEmpty {
-            // Centered in the page, and a lone preview sized to the window.
-            VStack(spacing: Theme.Space.xl) {
-                Text("發佈後會長這樣").font(Theme.Font.label).foregroundStyle(Theme.ink)
-                if model.mode == .carousel {
-                    StaticPreview(ids: picked.map(\.id), caption: model.carouselCaption.trimmingCharacters(in: .whitespacesAndNewlines),
-                                  collaborators: Usernames.parseList(model.carouselCollaboratorsText) ?? [], ai: model.carouselAI,
-                                  width: loneWidth(firstAspect: picked.first?.aspect))
-                } else if picked.count == 1, let p = picked.first {
-                    StaticPreview(ids: [p.id], caption: p.caption.trimmingCharacters(in: .whitespacesAndNewlines),
-                                  collaborators: p.extras?.collaborators ?? [], ai: p.aiGenerated, width: loneWidth(firstAspect: p.aspect))
-                } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: Theme.previewWidth), spacing: Theme.Space.xl, alignment: .top)],
-                              alignment: .center, spacing: Theme.Space.xl) {
-                        ForEach(picked) { p in
-                            StaticPreview(ids: [p.id], caption: p.caption.trimmingCharacters(in: .whitespacesAndNewlines),
-                                          collaborators: p.extras?.collaborators ?? [], ai: p.aiGenerated)
-                        }
-                    }
+        if !publishing && !picked.isEmpty {
+            // The post(s) and the profile grid side by side; stacked only when the window is too narrow for both.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: Theme.previewGap) {
+                    posts(picked)
+                    gridColumn(picked)
                 }
-                Text("在主頁格狀會長這樣").font(Theme.Font.label).foregroundStyle(Theme.ink)
-                    .padding(.top, Theme.Space.l)
-                ProfileGridPreview(posts: (model.mode == .carousel ? Array(picked.prefix(1)) : picked).map {
-                    .init(id: $0.id, url: $0.url, thumbnail: $0.thumbnail, isCarousel: model.mode == .carousel)
-                })
-                Text("主頁縮圖取照片正中間的 3:4，發佈時無法指定；要換位置，發佈後在 Instagram App 的「調整預覽」修改。")
-                    .font(Theme.Font.caption).foregroundStyle(Theme.ink3).multilineTextAlignment(.center)
-                    .frame(maxWidth: Theme.previewWidth)
-                Text("預覽依 Instagram 的版型與裁切規則模擬，實際畫面以 Instagram 為準。")
-                    .font(Theme.Font.caption).foregroundStyle(Theme.ink3).multilineTextAlignment(.center)
+                VStack(spacing: Theme.Space.xl) {
+                    posts(picked)
+                    gridColumn(picked)
+                }
             }
             .frame(maxWidth: .infinity)
         }
+    }
+
+    @ViewBuilder private func posts(_ picked: [PhotoItem]) -> some View {
+        if model.mode == .carousel {
+            StaticPreview(ids: picked.map(\.id), caption: model.carouselCaption.trimmingCharacters(in: .whitespacesAndNewlines),
+                          collaborators: Usernames.parseList(model.carouselCollaboratorsText) ?? [], ai: model.carouselAI,
+                          width: loneWidth(firstAspect: picked.first?.aspect))
+        } else if picked.count == 1, let p = picked.first {
+            StaticPreview(ids: [p.id], caption: p.caption.trimmingCharacters(in: .whitespacesAndNewlines),
+                          collaborators: p.extras?.collaborators ?? [], ai: p.aiGenerated, width: loneWidth(firstAspect: p.aspect))
+        } else {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: Theme.previewWidth), spacing: Theme.Space.xl, alignment: .top)],
+                      alignment: .center, spacing: Theme.Space.xl) {
+                ForEach(picked) { p in
+                    StaticPreview(ids: [p.id], caption: p.caption.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  collaborators: p.extras?.collaborators ?? [], ai: p.aiGenerated)
+                }
+            }
+            .frame(minWidth: Theme.previewWidth)
+        }
+    }
+
+    private func gridColumn(_ picked: [PhotoItem]) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Space.m) {
+            ProfileGridPreview(posts: (model.mode == .carousel ? Array(picked.prefix(1)) : picked).map {
+                .init(id: $0.id, url: $0.url, thumbnail: $0.thumbnail, isCarousel: model.mode == .carousel)
+            })
+            Text("主頁縮圖取照片正中間的 3:4，發佈時無法指定；要換位置，發佈後在 Instagram App 的「調整預覽」修改。")
+                .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
+            Text("預覽依 Instagram 的版型與裁切規則模擬，實際畫面以 Instagram 為準。")
+                .font(Theme.Font.caption).foregroundStyle(Theme.ink3)
+        }
+        .frame(width: Theme.previewWidth, alignment: .leading)
     }
 }
 
@@ -555,9 +651,13 @@ private struct ProgressPanel: View {
                 Text("Instagram 處理一張照片通常要幾秒到一分鐘。請不要關閉 App；若中途出錯，已上傳的暫存檔會自動刪除。")
                     .igCallout(Theme.ink3)
                 Spacer(minLength: Theme.Space.m)
-                Button("關閉") { model.clearProgress() }
-                    .buttonStyle(.igPlainSmall)
-                    .disabled(!model.progressFinished)
+                // Only a stopped run has somewhere to go back to (the preview, to fix and retry); after a success the
+                // footer's "回到選擇圖片" is the next step. Kept in place while running so the row does not jump.
+                if !model.progressFinished || failed {
+                    Button("回到預覽") { model.clearProgress() }
+                        .buttonStyle(.igPlainSmall)
+                        .disabled(!model.progressFinished)
+                }
             }
         }
         .card()

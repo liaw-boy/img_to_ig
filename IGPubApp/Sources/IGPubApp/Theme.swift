@@ -114,6 +114,7 @@ enum Theme {
     static let contentMaxWidth: CGFloat = 720
     static let previewWidth: CGFloat = 360          // one post preview in a grid of several
     static let previewMaxWidth: CGFloat = 760       // a lone preview grows with the window up to this
+    static let previewGap: CGFloat = 64             // between the post preview and the profile-grid column
     static let previewChrome: CGFloat = 190         // a lone post's height besides the photo (rows, caption); the label and note may scroll
     static let sidebarWidth: CGFloat = 240
     static let sidebarRowHeight: CGFloat = 56

@@ -49,8 +49,10 @@ struct PostEditor: View {
 
     private var form: some View {
         VStack(alignment: .leading, spacing: Theme.Space.l) {
-            Text(carousel ? "多張貼文（\(shown.count) 張）" : "第 \(number) 則 · \(shown.first?.url.lastPathComponent ?? "")")
-                .font(Theme.Font.title).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
+            HStack(spacing: Theme.Space.s) {
+                Text(carousel ? "多張貼文（\(shown.count) 張）" : "第 \(number) 則 · \(shown.first?.url.lastPathComponent ?? "")")
+                    .font(Theme.Font.title).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
+            }
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 Text("文案").font(Theme.Font.label).foregroundStyle(Theme.ink)
                 CaptionEditor(text: captionBinding, label: "文案")
@@ -65,8 +67,10 @@ struct PostEditor: View {
                 Toggle("這則貼文是 AI 生成的", isOn: aiBinding).toggleStyle(.checkbox).font(Theme.Font.callout)
             }
             Rectangle().fill(Theme.line).frame(height: 1)
-            Text(carousel ? "目前這張：\(shown.indices.contains(index) ? shown[index].url.lastPathComponent : "")" : "照片設定")
-                .font(Theme.Font.label).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
+            HStack(spacing: Theme.Space.s) {
+                Text(carousel ? "目前這張：第 \(index + 1) 張 · \(shown.indices.contains(index) ? shown[index].url.lastPathComponent : "")" : "照片設定")
+                    .font(Theme.Font.label).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
+            }
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 HStack {
                     Text("替代文字").font(Theme.Font.callout).foregroundStyle(Theme.ink2)

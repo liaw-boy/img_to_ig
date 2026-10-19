@@ -904,35 +904,6 @@ final class ConfigMigrationTests: XCTestCase {
 }
 
 
-final class ReorderTests: XCTestCase {
-    struct Item: Identifiable, Equatable { let id: Int }
-    private let a = (1...5).map(Item.init)
-    private func ids(_ x: [Item]) -> [Int] { x.map(\.id) }
-
-    func testMoveBeforeTarget() {
-        XCTAssertEqual(ids(Reorder.move(a, 4, before: 2)), [1, 4, 2, 3, 5])
-        XCTAssertEqual(ids(Reorder.move(a, 1, before: 4)), [2, 3, 1, 4, 5])
-        XCTAssertEqual(ids(Reorder.move(a, 2, before: 3)), [1, 2, 3, 4, 5])      // already right before it
-    }
-
-    func testMoveToEndAndNoOps() {
-        XCTAssertEqual(ids(Reorder.move(a, 2, before: nil)), [1, 3, 4, 5, 2])
-        XCTAssertEqual(ids(Reorder.move(a, 3, before: 3)), [1, 2, 3, 4, 5])
-        XCTAssertEqual(ids(Reorder.move(a, 99, before: 2)), [1, 2, 3, 4, 5])
-        XCTAssertEqual(ids(Reorder.move(a, 2, before: 99)), [1, 3, 4, 5, 2])     // unknown target = end
-    }
-
-    func testShiftStopsAtTheEnds() {
-        XCTAssertEqual(ids(Reorder.shift(a, 3, by: -1)), [1, 3, 2, 4, 5])
-        XCTAssertEqual(ids(Reorder.shift(a, 3, by: 1)), [1, 2, 4, 3, 5])
-        XCTAssertEqual(ids(Reorder.shift(a, 1, by: -1)), [1, 2, 3, 4, 5])
-        XCTAssertEqual(ids(Reorder.shift(a, 5, by: 3)), [1, 2, 3, 4, 5])
-        XCTAssertEqual(ids(Reorder.shift(a, 2, by: 10)), [1, 3, 4, 5, 2])
-        XCTAssertEqual(ids(Reorder.shift([], 1, by: 1)), [])
-    }
-}
-
-
 final class ShrinkTests: XCTestCase {
     /// A noisy JPEG (noise does not compress, so it is big): `side` x `side`, quality 1.0.
     private func noisyJPEG(side: Int) -> Data {
@@ -1275,5 +1246,67 @@ final class AuditFollowUpTests: XCTestCase {
             XCTAssertTrue(left.isEmpty)
         }
         XCTAssertEqual(puts, deletes, "every uploaded object must have been deleted")
+    }
+}
+
+final class PickOrderTests: XCTestCase {
+    struct Item: Identifiable { let id: Int }
+
+    func testPickOrderIsPostOrder() {
+        var p = PickOrder<Int>()
+        p.toggle(3); p.toggle(1); p.toggle(2)
+        XCTAssertEqual(p.ids, [3, 1, 2])
+        XCTAssertEqual(p.position(of: 1), 2)
+        XCTAssertNil(p.position(of: 9))
+        XCTAssertEqual(p.ordered((1...3).map(Item.init)).map(\.id), [3, 1, 2])
+    }
+
+    func testUnpickClosesTheGapAndRepickGoesLast() {
+        var p = PickOrder([1, 2, 3])
+        p.toggle(2)
+        XCTAssertEqual(p.ids, [1, 3])
+        XCTAssertEqual(p.position(of: 3), 2)
+        p.toggle(2)
+        XCTAssertEqual(p.ids, [1, 3, 2])
+    }
+
+    func testAddKeepsExistingPlacesAndSkipsDuplicates() {
+        var p = PickOrder([4])
+        p.add([2, 3, 4, 5])
+        XCTAssertEqual(p.ids, [4, 2, 3, 5])
+        XCTAssertEqual(PickOrder([1, 1, 2]).ids, [1, 2])
+    }
+
+    func testMoveStopsAtTheEnds() {
+        var p = PickOrder([1, 2, 3, 4])
+        p.move(3, by: -1)
+        XCTAssertEqual(p.ids, [1, 3, 2, 4])
+        p.move(3, by: 10)
+        XCTAssertEqual(p.ids, [1, 2, 4, 3])
+        p.move(1, by: -1)
+        p.move(9, by: 1)                                   // not picked
+        XCTAssertEqual(p.ids, [1, 2, 4, 3])
+    }
+
+    func testMoveBeforeTarget() {
+        var p = PickOrder([1, 2, 3, 4])
+        p.move(4, before: 2)
+        XCTAssertEqual(p.ids, [1, 4, 2, 3])
+        p.move(1, before: nil)
+        XCTAssertEqual(p.ids, [4, 2, 3, 1])
+        p.move(2, before: 2)                               // onto itself
+        p.move(9, before: 2)                               // not picked
+        XCTAssertEqual(p.ids, [4, 2, 3, 1])
+        p.move(4, before: 9)                               // unpicked target = end
+        XCTAssertEqual(p.ids, [2, 3, 1, 4])
+    }
+
+    func testRemoveAndMissingItems() {
+        var p = PickOrder([1, 2, 3])
+        p.remove([1, 3])
+        XCTAssertEqual(p.ids, [2])
+        XCTAssertEqual(PickOrder([5, 1]).ordered([Item(id: 1)]).map(\.id), [1])   // a picked id whose photo is gone
+        p.removeAll()
+        XCTAssertTrue(p.isEmpty)
     }
 }

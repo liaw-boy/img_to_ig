@@ -8,7 +8,6 @@ struct PhotoItem: Identifiable {
     let url: URL
     let digest: String
     var caption: String
-    var selected: Bool
     var alreadyPublished: Bool
     let thumbnail: NSImage?
     var bytes: Int = 0
@@ -32,9 +31,9 @@ private let stagedKeysDefaultsKey = "stagedKeys"
 
 /// The three pages of publishing, shown in the sidebar.
 enum FlowStep: Int, CaseIterable, Identifiable {
-    case select, edit, send
+    case select, order, edit, send
     var id: Int { rawValue }
-    var title: String { ["選擇圖片", "編輯內容", "發佈"][rawValue] }
+    var title: String { ["選擇圖片", "排列順序", "編輯內容", "發佈"][rawValue] }
 }
 
 enum UpdateState: Equatable {
@@ -115,6 +114,8 @@ final class AppModel: ObservableObject {
     // publish
     @Published var config: AppConfig?
     @Published var items: [PhotoItem] = []
+    /// Which photos are picked, in pick order (= post order). The grid itself keeps import order.
+    @Published var picks = PickOrder<UUID>()
     @Published var mode: PublishMode = .singles
     @Published var flow: FlowStep = .select
     /// Upload state of each selected photo's temporary copy, by content digest (uploaded while editing).
@@ -171,6 +172,7 @@ final class AppModel: ObservableObject {
     init() {
         let saved = store.load()
         config = saved
+        carouselCaption = Self.trimmed(saved?.defaultCaption)
         if let d = defaults.data(forKey: "draft"), let dd = try? JSONDecoder().decode(AppConfig.self, from: d) {
             draft = Self.sanitized(dd)
         } else {
@@ -389,6 +391,7 @@ final class AppModel: ObservableObject {
 
     func add(urls: [URL]) {
         guard let cfg = config else { return }
+        if progressFinished { clearProgress() }   // photos dropped onto a finished run start the next one
         let (ok, bad) = Files.collect(urls, maxBytes: max(cfg.maxBytes, AppConfig.maxSourceBytes))
         skipped = bad.map { "\($0.0.lastPathComponent)：\($0.1)" }
         for u in ok where !items.contains(where: { $0.url == u }) {
@@ -398,9 +401,11 @@ final class AppModel: ObservableObject {
             let size = (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             let txt = u.deletingPathExtension().appendingPathExtension("txt")
             let fromFile = !cap.isEmpty && FileManager.default.fileExists(atPath: txt.path) ? txt.lastPathComponent : nil
-            items.append(PhotoItem(url: u, digest: digest, caption: cap, selected: !done,
-                                   alreadyPublished: done, thumbnail: Self.thumbnail(u), bytes: size,
-                                   captionFile: fromFile))
+            let item = PhotoItem(url: u, digest: digest, caption: cap,
+                                 alreadyPublished: done, thumbnail: Self.thumbnail(u), bytes: size,
+                                 captionFile: fromFile)
+            items.append(item)
+            if !done { picks.add([item.id]) }
         }
     }
 
@@ -415,21 +420,30 @@ final class AppModel: ObservableObject {
 
     private var lastTapped: UUID?
 
-    /// Click toggles one photo; Shift-click selects every photo between the last click and this one.
+    /// Click toggles one photo; Shift-click picks every photo between the last click and this one, in screen order.
     func tapItem(_ id: UUID, extend: Bool) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
         if extend, let last = lastTapped, let j = items.firstIndex(where: { $0.id == last }) {
-            for k in min(i, j)...max(i, j) { items[k].selected = true }
+            picks.add(items[min(i, j)...max(i, j)].map(\.id))
         } else {
-            items[i].selected.toggle()
+            picks.toggle(id)
         }
         lastTapped = id
     }
 
-    func moveItem(_ id: UUID, before target: UUID?) { items = Reorder.move(items, id, before: target) }
-    func shiftItem(_ id: UUID, by offset: Int) { items = Reorder.shift(items, id, by: offset) }
+    func isPicked(_ id: UUID) -> Bool { picks.contains(id) }
 
-    var chosen: [PhotoItem] { items.filter { $0.selected } }
+    func unpickAll() {
+        picks.removeAll()
+        lastTapped = nil
+    }
+
+    /// Adjusts the post order in the order step (negative = earlier).
+    func movePick(_ id: UUID, by offset: Int) { picks.move(id, by: offset) }
+    func movePick(_ id: UUID, before target: UUID?) { picks.move(id, before: target) }
+
+    /// The picked photos in post order.
+    var chosen: [PhotoItem] { picks.ordered(items) }
 
     var publishProblem: String? {
         let n = chosen.count
@@ -516,7 +530,7 @@ final class AppModel: ObservableObject {
             var already = 0
             for i in items.indices where ledger.has(items[i].digest) && !items[i].alreadyPublished {
                 items[i].alreadyPublished = true
-                items[i].selected = false
+                picks.remove([items[i].id])
                 already += 1
             }
             if already > 0 {
@@ -527,8 +541,16 @@ final class AppModel: ObservableObject {
             frequentCollaborators.record(carousel ? (Usernames.parseList(carouselCollaboratorsText) ?? [])
                                                   : picked.flatMap { $0.extras?.collaborators ?? [] })
             let digests = Set(picked.map { $0.digest })
+            picks.remove(Set(items.filter { digests.contains($0.digest) }.map(\.id)))
             items.removeAll { digests.contains($0.digest) }
             for d in digests { stagedState[d] = nil }
+            // The next post starts fresh: a multi-photo post's text (back to the default caption), the last import's
+            // skip list and the mode belong to this one.
+            carouselCaption = Self.trimmed(config?.defaultCaption)
+            carouselCollaboratorsText = ""
+            carouselAI = false
+            skipped = []
+            mode = defaultMode
         }
         progressFinished = true
         await refreshQuota()
@@ -588,8 +610,10 @@ final class AppModel: ObservableObject {
     /// Saves publishing defaults (validated by ConfigStore).
     func saveConfig(_ c: AppConfig) -> String? {
         do {
+            let old = config?.defaultCaption
             try store.save(c)
             config = c
+            applyDefaultCaption(from: old, to: c.defaultCaption)
             draft.defaultCaption = c.defaultCaption
             draft.maxBytes = c.maxBytes
             return nil
@@ -597,6 +621,19 @@ final class AppModel: ObservableObject {
             return error.localizedDescription
         }
     }
+
+    /// A new default caption reaches every caption still showing the old one (or nothing); edited text and
+    /// captions from a .txt file stay as they are.
+    private func applyDefaultCaption(from old: String?, to new: String) {
+        let was = Self.trimmed(old), now = Self.trimmed(new)
+        guard was != now else { return }
+        for i in items.indices where items[i].captionFile == nil && (items[i].caption == was || items[i].caption.isEmpty) {
+            items[i].caption = now
+        }
+        if carouselCaption == was || carouselCaption.isEmpty { carouselCaption = now }
+    }
+
+    private static func trimmed(_ s: String?) -> String { (s ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
 
     func reloadHistory() {
         ledger.reload()
@@ -627,6 +664,7 @@ final class AppModel: ObservableObject {
         doneSteps = []
         step = 0
         items = []
+        picks.removeAll()
         testLines = []
         quota = nil
         clearProgress()
@@ -650,13 +688,18 @@ final class AppModel: ObservableObject {
         guard !busy else { return false }
         switch s {
         case .select: return true
-        case .edit: return !chosen.isEmpty
+        case .order, .edit: return !chosen.isEmpty
         case .send: return !chosen.isEmpty && publishProblem == nil
         }
     }
 
     func go(_ s: FlowStep) {
         guard canGo(s) else { return }
+        // A finished run's result (progress and error) belongs to that run; leaving step 3 drops it.
+        if progressFinished && s != flow {
+            clearProgress()
+            setError(nil)
+        }
         flow = s
         if s != .select { Task { await syncStaging() } }
     }
@@ -667,6 +710,7 @@ final class AppModel: ObservableObject {
     func clearItems() {
         let digests = Set(items.map(\.digest))
         items = []
+        picks.removeAll()
         Task { await discardStaged(digests) }
     }
 

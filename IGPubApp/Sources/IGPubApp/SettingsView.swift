@@ -9,7 +9,7 @@ enum SettingsTab: Int, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .account: return "帳號"
-        case .storage: return "儲存空間"
+        case .storage: return "R2 金鑰"
         case .defaults: return "發佈預設"
         case .privacy: return "紀錄與隱私"
         }
@@ -17,7 +17,7 @@ enum SettingsTab: Int, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .account: return "person.crop.circle"
-        case .storage: return "externaldrive"
+        case .storage: return "key"
         case .defaults: return "slider.horizontal.3"
         case .privacy: return "lock.shield"
         }
@@ -180,7 +180,7 @@ private struct AccountTab: View {
     }
 }
 
-// MARK: 儲存空間
+// MARK: R2 金鑰
 
 private struct StorageTab: View {
     @EnvironmentObject var model: AppModel
